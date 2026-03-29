@@ -1,0 +1,78 @@
+services:
+  claudecodeui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Or use a pre-built image:
+    # image: your-registry/claudecodeui:latest
+    ports:
+      - "3001:3001"
+    environment:
+      SERVER_PORT: 3001
+      HOST: 0.0.0.0
+      # Path inside the container where the auth database will be stored.
+      DATABASE_PATH: /data/auth.db
+      CONTEXT_WINDOW: 160000
+      VITE_CONTEXT_WINDOW: 160000
+
+      # API keys — use a .env file (copy .env.example to .env) or set them here.
+      # ANTHROPIC_API_KEY: ""
+      # OPENAI_API_KEY: ""
+      # GEMINI_API_KEY: ""
+
+      # Optional: custom paths for AI CLIs if not on the default PATH.
+      # CLAUDE_CLI_PATH: /usr/local/bin/claude
+      # GEMINI_PATH: /usr/local/bin/gemini
+
+      # Optional: JWT secret for auth. Generate with: openssl rand -hex 32
+      # JWT_SECRET: ""
+    volumes:
+      # -----------------------------------------------------------------------
+      # AI CLI config directories
+      # Mount whichever CLIs you actually use. ~/.claude is required for
+      # Claude Code; the others are only needed if you use those CLIs too.
+      # -----------------------------------------------------------------------
+      - "${HOME}/.claude:/root/.claude"
+      # - "${HOME}/.cursor:/root/.cursor"
+      # - "${HOME}/.codex:/root/.codex"
+      # - "${HOME}/.gemini:/root/.gemini"
+
+      # CloudCLI UI own data directories (plugins, etc.)
+      - "${HOME}/.cloudcli:/root/.cloudcli"
+      - "${HOME}/.claude-code-ui:/root/.claude-code-ui"
+
+      # Claude system-level config (CLAUDE.md, etc.)
+      # - "${HOME}/.config/claude:/root/.config/claude"
+
+      # -----------------------------------------------------------------------
+      # Git access
+      # Required if you want git operations (commit, diff, branch, etc.) to
+      # work correctly with your identity and SSH keys.
+      # -----------------------------------------------------------------------
+      - "${HOME}/.gitconfig:/root/.gitconfig:ro"
+      - "${HOME}/.ssh:/root/.ssh:ro"
+
+      # -----------------------------------------------------------------------
+      # Project directories
+      # Mount the directory that contains the code you want to work on.
+      # Adjust the left-hand side to point to your actual projects folder.
+      # You can add multiple mounts for different locations.
+      # -----------------------------------------------------------------------
+      - "${HOME}/code_projects:/root/projects"
+
+      # Persistent volume for the authentication database.
+      - claudecodeui_data:/data
+
+    # node-pty uses the kernel's PTY subsystem to run the integrated terminal.
+    # Docker containers have their own /dev/pts mount by default, which is
+    # sufficient. If the terminal fails to open, try uncommenting the lines
+    # below to grant the additional capability needed for PTY allocation.
+    # cap_add:
+    #   - SYS_ADMIN
+    # devices:
+    #   - /dev/ptmx:/dev/ptmx
+
+    restart: unless-stopped
+
+volumes:
+  claudecodeui_data:
