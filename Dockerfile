@@ -16,6 +16,7 @@ WORKDIR /app
 
 # Install dependencies first (better layer caching)
 COPY package.json package-lock.json ./
+COPY scripts/ ./scripts/
 ENV HUSKY=0
 RUN npm ci
 
