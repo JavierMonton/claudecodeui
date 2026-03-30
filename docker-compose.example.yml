@@ -65,7 +65,8 @@ services:
       - "${HOME}/code_projects:/home/appuser/projects"
 
       # Persistent volume for the authentication database.
-      - claudecodeui_data:/data
+      # Bind mount so the non-root container user (UID 1001) has write access.
+      - "${HOME}/.claude-code-ui/data:/data"
 
     # node-pty uses the kernel's PTY subsystem to run the integrated terminal.
     # Docker containers have their own /dev/pts mount by default, which is
@@ -77,6 +78,3 @@ services:
     #   - /dev/ptmx:/dev/ptmx
 
     restart: unless-stopped
-
-volumes:
-  claudecodeui_data:
