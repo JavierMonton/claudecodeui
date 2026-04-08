@@ -11,7 +11,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude CLI using the native installer (recommended since Oct 2025, no npm required)
-RUN curl -fsSL https://claude.ai/install.sh | bash
+# The installer places the binary at ~/.local/bin/claude (root's home during build).
+# Copy it to /usr/local/bin so it's available to all users (including appuser/1001).
+RUN curl -fsSL https://claude.ai/install.sh | bash && \
+    cp /root/.local/bin/claude /usr/local/bin/claude && \
+    chmod +x /usr/local/bin/claude
 
 # Create a non-root user with a proper home directory.
 # UID/GID 1001 matches the recommended `user: "1001:1001"` in docker-compose.
