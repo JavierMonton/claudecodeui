@@ -7,10 +7,11 @@ RUN apt-get update && apt-get install -y \
     make \
     g++ \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude CLI globally (and optionally other supported CLIs)
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude CLI using the native installer (recommended since Oct 2025, no npm required)
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Create a non-root user with a proper home directory.
 # UID/GID 1001 matches the recommended `user: "1001:1001"` in docker-compose.
