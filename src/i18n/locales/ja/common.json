@@ -22,7 +22,9 @@
     "shell": "シェル",
     "files": "ファイル",
     "git": "ソース管理",
-    "tasks": "タスク"
+    "tasks": "タスク",
+    "browser": "Browser",
+    "computer": "Computer"
   },
   "status": {
     "loading": "読み込み中...",
@@ -84,7 +86,7 @@
     "openInEditor": "エディタで開く"
   },
   "mainContent": {
-    "loading": "Claude Code UI を読み込んでいます",
+    "loading": "CloudCLI を読み込んでいます",
     "settingUpWorkspace": "ワークスペースを準備しています...",
     "chooseProject": "プロジェクトを選択",
     "selectProjectDescription": "サイドバーからプロジェクトを選択して、Claudeとコーディングを始めましょう。各プロジェクトにはチャットセッションとファイル履歴が含まれています。",
@@ -176,7 +178,6 @@
     },
     "step3": {
       "reviewConfig": "設定の確認",
-      "workspaceType": "ワークスペースの種類:",
       "existingWorkspace": "既存のワークスペース",
       "newWorkspace": "新しいワークスペース",
       "path": "パス:",

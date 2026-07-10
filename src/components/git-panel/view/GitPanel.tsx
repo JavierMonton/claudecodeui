@@ -46,6 +46,8 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
     handlePublish,
     discardChanges,
     deleteUntrackedFile,
+    stageFiles,
+    unstageFiles,
     fetchCommitDiff,
     generateCommitMessage,
     commitChanges,
@@ -58,7 +60,9 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
   });
 
   const { isRevertingLocalCommit, revertLatestLocalCommit } = useRevertLocalCommit({
-    projectName: selectedProject?.name ?? null,
+    // `projectId` (DB primary key) is forwarded to the revert API which uses it
+    // as the `project` body param.
+    projectId: selectedProject?.projectId ?? null,
     onSuccess: refreshAll,
   });
 
@@ -136,6 +140,8 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
               onOpenFile={openFile}
               onDiscardFile={discardChanges}
               onDeleteFile={deleteUntrackedFile}
+              onStageFiles={stageFiles}
+              onUnstageFiles={unstageFiles}
               onCommitChanges={commitChanges}
               onGenerateCommitMessage={generateCommitMessage}
               onRequestConfirmation={setConfirmAction}

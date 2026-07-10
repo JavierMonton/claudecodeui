@@ -1,6 +1,7 @@
 import { History, RefreshCw } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { GitDiffMap, GitCommitSummary } from '../../types/types';
+import { computeCommitGraph } from '../../utils/commitGraph';
 import CommitHistoryItem from './CommitHistoryItem';
 
 type HistoryViewProps = {
@@ -21,6 +22,15 @@ export default function HistoryView({
   onFetchCommitDiff,
 }: HistoryViewProps) {
   const [expandedCommits, setExpandedCommits] = useState<Set<string>>(new Set());
+
+  // Lane layout for the commit graph; rows align 1:1 with recentCommits.
+  // Older API responses without `parents` degrade to plain rows (no strip).
+  const graphRows = useMemo(() => {
+    if (!recentCommits.some((commit) => commit.parents !== undefined)) {
+      return null;
+    }
+    return computeCommitGraph(recentCommits);
+  }, [recentCommits]);
 
   const toggleCommitExpanded = useCallback(
     (commitHash: string) => {
@@ -47,7 +57,7 @@ export default function HistoryView({
   );
 
   return (
-    <div className={`flex-1 overflow-y-auto ${isMobile ? 'pb-mobile-nav' : ''}`}>
+    <div className="flex-1 overflow-y-auto">
       {isLoading ? (
         <div className="flex h-32 items-center justify-center">
           <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -59,7 +69,7 @@ export default function HistoryView({
         </div>
       ) : (
         <div className={isMobile ? 'pb-4' : ''}>
-          {recentCommits.map((commit) => (
+          {recentCommits.map((commit, index) => (
             <CommitHistoryItem
               key={commit.hash}
               commit={commit}
@@ -67,6 +77,7 @@ export default function HistoryView({
               diff={commitDiffs[commit.hash]}
               isMobile={isMobile}
               wrapText={wrapText}
+              graphRow={graphRows?.[index]}
               onToggle={() => toggleCommitExpanded(commit.hash)}
             />
           ))}

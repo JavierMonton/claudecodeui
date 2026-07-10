@@ -1,6 +1,10 @@
 import type { AgentCategoryContentSectionProps } from '../types';
+import type { McpProject } from '../../../../../mcp/types';
+import { McpServers } from '../../../../../mcp';
+import type { SkillsProject } from '../../../../../skills/types';
+import { ProviderSkills } from '../../../../../skills';
+
 import AccountContent from './content/AccountContent';
-import McpServersContent from './content/McpServersContent';
 import PermissionsContent from './content/PermissionsContent';
 
 export default function AgentCategoryContentSection({
@@ -13,25 +17,10 @@ export default function AgentCategoryContentSection({
   onCursorPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
-  mcpServers,
-  cursorMcpServers,
-  codexMcpServers,
-  mcpTestResults,
-  mcpServerTools,
-  mcpToolsLoading,
-  deleteError,
-  onOpenMcpForm,
-  onDeleteMcpServer,
-  onTestMcpServer,
-  onDiscoverMcpTools,
-  onOpenCodexMcpForm,
-  onDeleteCodexMcpServer,
+  projects,
 }: AgentCategoryContentSectionProps) {
-  // Cursor MCP add/edit/delete was previously a placeholder and is intentionally preserved.
-  const noopCursorMcpAction = () => {};
-
   return (
-    <div className="flex-1 overflow-y-auto p-3 md:p-4">
+    <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-4">
       {selectedCategory === 'account' && (
         <AccountContent
           agent={selectedAgent}
@@ -84,40 +73,29 @@ export default function AgentCategoryContentSection({
         />
       )}
 
-      {selectedCategory === 'mcp' && selectedAgent === 'claude' && (
-        <McpServersContent
-          agent="claude"
-          servers={mcpServers}
-          onAdd={() => onOpenMcpForm()}
-          onEdit={(server) => onOpenMcpForm(server)}
-          onDelete={onDeleteMcpServer}
-          onTest={onTestMcpServer}
-          onDiscoverTools={onDiscoverMcpTools}
-          testResults={mcpTestResults}
-          serverTools={mcpServerTools}
-          toolsLoading={mcpToolsLoading}
-          deleteError={deleteError}
+      {selectedCategory === 'mcp' && (
+        // SettingsProject.name is populated from the DB projectId by
+        // normalizeProjectForSettings, so we can map it straight through.
+        <McpServers
+          selectedProvider={selectedAgent}
+          currentProjects={projects.map<McpProject>((project) => ({
+            projectId: project.name,
+            displayName: project.displayName,
+            fullPath: project.fullPath,
+            path: project.path,
+          }))}
         />
       )}
 
-      {selectedCategory === 'mcp' && selectedAgent === 'cursor' && (
-        <McpServersContent
-          agent="cursor"
-          servers={cursorMcpServers}
-          onAdd={noopCursorMcpAction}
-          onEdit={noopCursorMcpAction}
-          onDelete={noopCursorMcpAction}
-        />
-      )}
-
-      {selectedCategory === 'mcp' && selectedAgent === 'codex' && (
-        <McpServersContent
-          agent="codex"
-          servers={codexMcpServers}
-          onAdd={() => onOpenCodexMcpForm()}
-          onEdit={(server) => onOpenCodexMcpForm(server)}
-          onDelete={(serverId) => onDeleteCodexMcpServer(serverId)}
-          deleteError={deleteError}
+      {selectedCategory === 'skills' && selectedAgent !== 'opencode' && (
+        <ProviderSkills
+          selectedProvider={selectedAgent}
+          currentProjects={projects.map<SkillsProject>((project) => ({
+            projectId: project.name,
+            displayName: project.displayName,
+            fullPath: project.fullPath,
+            path: project.path,
+          }))}
         />
       )}
     </div>

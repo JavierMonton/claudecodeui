@@ -1,7 +1,8 @@
-import { Settings, Sparkles, PanelLeftOpen } from 'lucide-react';
+import { Settings, Sparkles, PanelLeftOpen, Bug, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 const DISCORD_INVITE_URL = 'https://discord.gg/buxwujPNRE';
+const GITHUB_ISSUES_URL = 'https://github.com/siteboon/claudecodeui/issues/new';
 
 function DiscordIcon({ className }: { className?: string }) {
   return (
@@ -15,6 +16,7 @@ type SidebarCollapsedProps = {
   onExpand: () => void;
   onShowSettings: () => void;
   updateAvailable: boolean;
+  restartRequired: boolean;
   onShowVersionModal: () => void;
   t: TFunction;
 };
@@ -23,6 +25,7 @@ export default function SidebarCollapsed({
   onExpand,
   onShowSettings,
   updateAvailable,
+  restartRequired,
   onShowVersionModal,
   t,
 }: SidebarCollapsedProps) {
@@ -50,6 +53,18 @@ export default function SidebarCollapsed({
         <Settings className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
       </button>
 
+      {/* Report Issue */}
+      <a
+        href={GITHUB_ISSUES_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="group flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-accent/80"
+        aria-label={t('actions.reportIssue')}
+        title={t('actions.reportIssue')}
+      >
+        <Bug className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+      </a>
+
       {/* Discord */}
       <a
         href={DISCORD_INVITE_URL}
@@ -61,6 +76,18 @@ export default function SidebarCollapsed({
       >
         <DiscordIcon className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
       </a>
+
+      {/* Restart-required indicator */}
+      {restartRequired && (
+        <div
+          className="relative flex h-8 w-8 items-center justify-center rounded-lg"
+          aria-label={t('version.restartRequired')}
+          title={t('version.restartRequired')}
+        >
+          <AlertTriangle className="h-4 w-4 text-amber-500" />
+          <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+        </div>
+      )}
 
       {/* Update indicator */}
       {updateAvailable && (

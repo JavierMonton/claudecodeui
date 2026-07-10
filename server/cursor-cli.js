@@ -1,11 +1,15 @@
-import { spawn } from 'child_process';
 import crossSpawn from 'cross-spawn';
-import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
-import { cursorAdapter } from './providers/cursor/adapter.js';
-import { createNormalizedMessage } from './providers/types.js';
 
-// Use cross-spawn on Windows for better command execution
-const spawnFunction = process.platform === 'win32' ? crossSpawn : spawn;
+import { appendImagesInputTag } from './shared/image-attachments.js';
+import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
+import { sessionsService } from './modules/providers/services/sessions.service.js';
+import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
+import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from './shared/utils.js';
+
+// cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
+// child_process.spawn everywhere else.
+const spawnFunction = crossSpawn;
 
 let activeCursorProcesses = new Map(); // Track active processes by session ID
 
@@ -26,11 +30,16 @@ function isWorkspaceTrustPrompt(text = '') {
 
 async function spawnCursor(command, options = {}, ws) {
   return new Promise(async (resolve, reject) => {
-    const { sessionId, projectPath, cwd, resume, toolsSettings, skipPermissions, model, sessionSummary } = options;
+    const { sessionId, projectPath, cwd, toolsSettings, skipPermissions, model, sessionSummary, images } = options;
+    const resolvedModel = await providerModelsService.resolveResumeModel('cursor', sessionId, model);
     let capturedSessionId = sessionId; // Track session ID throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
     let hasRetriedWithTrust = false;
     let settled = false;
+    // The unified lifecycle contract requires exactly one terminal `complete`
+    // per run. Cursor surfaces completion twice (the `result` JSON line and
+    // the process close), so the first emission wins.
+    let completeSent = false;
 
     // Use tools settings passed from frontend, or defaults
     const settings = toolsSettings || {
@@ -48,12 +57,17 @@ async function spawnCursor(command, options = {}, ws) {
     }
 
     if (command && command.trim()) {
-      // Provide a prompt (works for both new and resumed sessions)
-      baseArgs.push('-p', command);
+      // Provide a prompt (works for both new and resumed sessions). Image
+      // attachments ride along as an <images_input> path list appended to the
+      // prompt; the session history reader strips the tag back out for display.
+      // cursor-agent is a .cmd shim on Windows, so the whole argument must be
+      // newline-free or cmd.exe silently truncates it at the first newline.
+      baseArgs.push('-p', flattenPromptForWindowsShell(appendImagesInputTag(command, images)));
 
-      // Add model flag if specified (only meaningful for new sessions; harmless on resume)
-      if (!sessionId && model) {
-        baseArgs.push('--model', model);
+      // Model overrides are applied to both new and resumed sessions so a
+      // session-scoped change request can take effect on the next turn.
+      if (resolvedModel) {
+        baseArgs.push('--model', resolvedModel);
       }
 
       // Request streaming JSON when we are providing a prompt
@@ -63,7 +77,6 @@ async function spawnCursor(command, options = {}, ws) {
     // Add skip permissions flag if enabled
     if (skipPermissions || settings.skipPermissions) {
       baseArgs.push('-f');
-      console.log('Using -f flag (skip permissions)');
     }
 
     // Use cwd (actual project directory) instead of projectPath
@@ -118,10 +131,6 @@ async function spawnCursor(command, options = {}, ws) {
         console.log('Retrying Cursor CLI with --trust after workspace trust prompt');
       }
 
-      console.log('Spawning Cursor CLI:', 'cursor-agent', args.join(' '));
-      console.log('Working directory:', workingDir);
-      console.log('Session info - Input sessionId:', sessionId, 'Resume:', resume);
-
       const cursorProcess = spawnFunction('cursor-agent', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -149,7 +158,6 @@ async function spawnCursor(command, options = {}, ws) {
 
         try {
           const response = JSON.parse(line);
-          console.log('Parsed JSON response:', response);
 
           // Handle different message types
           switch (response.type) {
@@ -158,7 +166,6 @@ async function spawnCursor(command, options = {}, ws) {
                 // Capture session ID
                 if (response.session_id && !capturedSessionId) {
                   capturedSessionId = response.session_id;
-                  console.log('Captured session ID:', capturedSessionId);
 
                   // Update process key with captured session ID
                   if (processKey !== capturedSessionId) {
@@ -189,22 +196,21 @@ async function spawnCursor(command, options = {}, ws) {
             case 'assistant':
               // Accumulate assistant message chunks
               if (response.message && response.message.content && response.message.content.length > 0) {
-                const normalized = cursorAdapter.normalizeMessage(response, capturedSessionId || sessionId || null);
+                const normalized = sessionsService.normalizeMessage('cursor', response, capturedSessionId || sessionId || null);
                 for (const msg of normalized) ws.send(msg);
               }
               break;
 
             case 'result': {
-              // Session complete — send stream end + lifecycle complete with result payload
-              console.log('Cursor session result:', response);
-              const resultText = typeof response.result === 'string' ? response.result : '';
-              ws.send(createNormalizedMessage({
-                kind: 'complete',
-                exitCode: response.subtype === 'success' ? 0 : 1,
-                resultText,
-                isError: response.subtype !== 'success',
-                sessionId: capturedSessionId || sessionId, provider: 'cursor',
-              }));
+              // Session complete — terminal lifecycle event for this run
+              if (!completeSent) {
+                completeSent = true;
+                ws.send(createCompleteMessage({
+                  provider: 'cursor',
+                  sessionId: capturedSessionId || sessionId || null,
+                  exitCode: response.subtype === 'success' ? 0 : 1,
+                }));
+              }
               break;
             }
 
@@ -212,14 +218,12 @@ async function spawnCursor(command, options = {}, ws) {
               // Unknown message types — ignore.
           }
         } catch (parseError) {
-          console.log('Non-JSON response:', line);
-
           if (shouldSuppressForTrustRetry(line)) {
             return;
           }
 
           // If not JSON, send as stream delta via adapter
-          const normalized = cursorAdapter.normalizeMessage(line, capturedSessionId || sessionId || null);
+          const normalized = sessionsService.normalizeMessage('cursor', line, capturedSessionId || sessionId || null);
           for (const msg of normalized) ws.send(msg);
         }
       };
@@ -227,7 +231,6 @@ async function spawnCursor(command, options = {}, ws) {
       // Handle stdout (streaming JSON responses)
       cursorProcess.stdout.on('data', (data) => {
         const rawOutput = data.toString();
-        console.log('Cursor CLI stdout:', rawOutput);
 
         // Stream chunks can split JSON objects across packets; keep trailing partial line.
         stdoutLineBuffer += rawOutput;
@@ -253,8 +256,6 @@ async function spawnCursor(command, options = {}, ws) {
 
       // Handle process completion
       cursorProcess.on('close', async (code) => {
-        console.log(`Cursor CLI process exited with code ${code}`);
-
         const finalSessionId = capturedSessionId || sessionId || processKey;
         activeCursorProcesses.delete(finalSessionId);
 
@@ -275,7 +276,12 @@ async function spawnCursor(command, options = {}, ws) {
           return;
         }
 
-        ws.send(createNormalizedMessage({ kind: 'complete', exitCode: code, isNewSession: !sessionId && !!command, sessionId: finalSessionId, provider: 'cursor' }));
+        // Terminal complete — unless the `result` line already sent it, or the
+        // run was aborted (abort-session sent the aborted complete).
+        if (!completeSent && !cursorProcess.aborted) {
+          completeSent = true;
+          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: finalSessionId, exitCode: code }));
+        }
 
         if (code === 0) {
           notifyTerminalState({ code });
@@ -287,14 +293,24 @@ async function spawnCursor(command, options = {}, ws) {
       });
 
       // Handle process errors
-      cursorProcess.on('error', (error) => {
+      cursorProcess.on('error', async (error) => {
         console.error('Cursor CLI process error:', error);
 
         // Clean up process reference on error
         const finalSessionId = capturedSessionId || sessionId || processKey;
         activeCursorProcesses.delete(finalSessionId);
 
-        ws.send(createNormalizedMessage({ kind: 'error', content: error.message, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
+        // Check if Cursor CLI is installed for a clearer error message
+        const installed = await providerAuthService.isProviderInstalled('cursor');
+        const errorContent = !installed
+          ? 'Cursor CLI is not installed. Please install it from https://cursor.com'
+          : error.message;
+
+        ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
+        if (!completeSent && !cursorProcess.aborted) {
+          completeSent = true;
+          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
+        }
         notifyTerminalState({ error });
 
         settleOnce(() => reject(error));
@@ -312,6 +328,9 @@ function abortCursorSession(sessionId) {
   const process = activeCursorProcesses.get(sessionId);
   if (process) {
     console.log(`Aborting Cursor session: ${sessionId}`);
+    // The abort handler sends the terminal complete (aborted: true); flag the
+    // process so its close handler does not emit a second one.
+    process.aborted = true;
     process.kill('SIGTERM');
     activeCursorProcesses.delete(sessionId);
     return true;

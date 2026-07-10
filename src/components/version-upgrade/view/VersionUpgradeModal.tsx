@@ -1,9 +1,12 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useTranslation } from "react-i18next";
 import { authenticatedFetch } from "../../../utils/api";
 import { ReleaseInfo } from "../../../types/sharedTypes";
 import { copyTextToClipboard } from "../../../utils/clipboard";
 import type { InstallMode } from "../../../hooks/useVersionCheck";
+import { IS_PLATFORM } from "../../../constants/config";
 
 interface VersionUpgradeModalProps {
     isOpen: boolean;
@@ -13,6 +16,8 @@ interface VersionUpgradeModalProps {
     latestVersion: string | null;
     installMode: InstallMode;
 }
+
+const RELOAD_COUNTDOWN_START = 30;
 
 export function VersionUpgradeModal({
     isOpen,
@@ -25,14 +30,36 @@ export function VersionUpgradeModal({
     const { t } = useTranslation('common');
     const upgradeCommand = installMode === 'npm'
         ? t('versionUpdate.npmUpgradeCommand')
-        : 'git checkout main && git pull && npm install';
+        : IS_PLATFORM
+            ? 'npm run update:platform'
+            : 'git checkout main && git pull && npm install';
     const [isUpdating, setIsUpdating] = useState(false);
     const [updateOutput, setUpdateOutput] = useState('');
     const [updateError, setUpdateError] = useState('');
+    const [reloadCountdown, setReloadCountdown] = useState<number | null>(null);
+
+    useEffect(() => {
+        if (!IS_PLATFORM || reloadCountdown === null || reloadCountdown <= 0) {
+            return;
+        }
+
+        const timeoutId = window.setTimeout(() => {
+            setReloadCountdown((previousCountdown) => {
+                if (previousCountdown === null) {
+                    return null;
+                }
+
+                return Math.max(previousCountdown - 1, 0);
+            });
+        }, 1000);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [reloadCountdown]);
 
     const handleUpdateNow = useCallback(async () => {
         setIsUpdating(true);
         setUpdateOutput('Starting update...\n');
+        setReloadCountdown(IS_PLATFORM ? RELOAD_COUNTDOWN_START : null);
         setUpdateError('');
 
         try {
@@ -46,7 +73,7 @@ export function VersionUpgradeModal({
             if (response.ok) {
                 setUpdateOutput(prev => prev + data.output + '\n');
                 setUpdateOutput(prev => prev + '\n✅ Update completed successfully!\n');
-                setUpdateOutput(prev => prev + 'Please restart the server to apply changes.\n');
+                setUpdateOutput(prev => prev + 'Please restart the server to apply changes.' + '\n');
             } else {
                 setUpdateError(data.error || 'Update failed');
                 setUpdateOutput(prev => prev + '\n❌ Update failed: ' + (data.error || 'Unknown error') + '\n');
@@ -129,8 +156,10 @@ export function VersionUpgradeModal({
                             )}
                         </div>
                         <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-600 dark:bg-gray-700/50">
-                            <div className="prose prose-sm max-w-none whitespace-pre-wrap text-sm text-gray-700 dark:prose-invert dark:text-gray-300">
-                                {cleanChangelog(releaseInfo.body)}
+                            <div className="prose prose-sm max-w-none text-sm text-gray-700 dark:prose-invert dark:text-gray-300">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={changelogComponents}>
+                                    {cleanChangelog(releaseInfo.body)}
+                                </ReactMarkdown>
                             </div>
                         </div>
                     </div>
@@ -143,6 +172,13 @@ export function VersionUpgradeModal({
                         <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 p-4 dark:bg-gray-950">
                             <pre className="whitespace-pre-wrap font-mono text-xs text-green-400">{updateOutput}</pre>
                         </div>
+                        {IS_PLATFORM && reloadCountdown !== null && (
+                            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-200">
+                                {reloadCountdown === 0
+                                    ? 'Refresh the page now. If that doesn\'t work, RESTART the environment.'
+                                    : `Refresh the page in ${reloadCountdown} ${reloadCountdown === 1 ? 'second' : 'seconds'}. If that doesn\'t work, RESTART the environment.`}
+                            </div>
+                        )}
                         {updateError && (
                             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
                                 {updateError}
@@ -202,6 +238,14 @@ export function VersionUpgradeModal({
             </div>
         </div>
     );
+};
+
+const changelogComponents = {
+    a: ({ href, children }: { href?: string; children?: ReactNode }) => (
+        <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">
+            {children}
+        </a>
+    ),
 };
 
 // Clean up changelog by removing GitHub-specific metadata

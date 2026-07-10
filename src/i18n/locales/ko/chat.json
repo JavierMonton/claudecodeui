@@ -17,8 +17,7 @@
     "tool": "도구",
     "claude": "Claude",
     "cursor": "Cursor",
-    "codex": "Codex",
-    "gemini": "Gemini"
+    "codex": "Codex"
   },
   "tools": {
     "settings": "도구 설정",
@@ -89,12 +88,14 @@
     "permissionMode": "권한 모드",
     "modes": {
       "default": "기본 모드",
+      "auto": "Auto Mode",
       "acceptEdits": "편집 허용",
       "bypassPermissions": "권한 우회",
       "plan": "Plan 모드"
     },
     "descriptions": {
       "default": "신뢰할 수 있는 명령어(ls, cat, grep, git status 등)만 자동 실행됩니다. 다른 명령어는 건너뜁니다. 워크스페이스에 쓰기 가능.",
+      "auto": "A model classifier decides per tool call whether to approve or deny. Hands-off, but safer than Bypass — denials still happen.",
       "acceptEdits": "워크스페이스 내에서 모든 명령어가 자동 실행됩니다. 샌드박스 내 완전 자동 모드.",
       "bypassPermissions": "제한 없는 전체 시스템 접근. 모든 명령어가 전체 디스크 및 네트워크 접근 권한으로 자동 실행됩니다. 주의해서 사용하세요.",
       "plan": "계획 모드 - 명령어가 실행되지 않습니다"
@@ -118,42 +119,6 @@
     "clearInput": "입력 지우기",
     "scrollToBottom": "맨 아래로 스크롤"
   },
-  "thinkingMode": {
-    "selector": {
-      "title": "Thinking 모드",
-      "description": "확장된 thinking은 Claude에게 대안을 평가할 시간을 더 줍니다",
-      "active": "활성",
-      "tip": "높은 thinking 모드는 시간이 더 걸리지만 더 철저한 분석을 제공합니다"
-    },
-    "modes": {
-      "none": {
-        "name": "Standard",
-        "description": "일반 Claude 응답",
-        "prefix": ""
-      },
-      "think": {
-        "name": "Think",
-        "description": "기본 확장 thinking",
-        "prefix": "think"
-      },
-      "thinkHard": {
-        "name": "Think Hard",
-        "description": "더 철저한 평가",
-        "prefix": "think hard"
-      },
-      "thinkHarder": {
-        "name": "Think Harder",
-        "description": "대안을 포함한 심층 분석",
-        "prefix": "think harder"
-      },
-      "ultrathink": {
-        "name": "Ultrathink",
-        "description": "최대 thinking 예산",
-        "prefix": "ultrathink"
-      }
-    },
-    "buttonTitle": "Thinking 모드: {{mode}}"
-  },
   "providerSelection": {
     "title": "AI 어시스턴트 선택",
     "description": "새 대화를 시작할 프로바이더를 선택하세요",
@@ -168,9 +133,9 @@
       "claude": "{{model}} 모델로 Claude를 사용할 준비가 되었습니다. 아래에 메시지를 입력하세요.",
       "cursor": "{{model}} 모델로 Cursor를 사용할 준비가 되었습니다. 아래에 메시지를 입력하세요.",
       "codex": "{{model}} 모델로 Codex를 사용할 준비가 되었습니다. 아래에 메시지를 입력하세요.",
-      "gemini": "{{model}} 모델로 Gemini를 사용할 준비가 되었습니다. 아래에 메시지를 입력하세요.",
       "default": "시작하려면 위에서 제공자를 선택하세요"
-    }
+    },
+    "pressToSearch": "<kbd>{{shortcut}}</kbd>를 눌러 세션, 파일 및 커밋을 검색하세요"
   },
   "session": {
     "continue": {

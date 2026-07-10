@@ -1,17 +1,23 @@
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+
 import ChatInterface from '../../chat/view/ChatInterface';
 import FileTree from '../../file-tree/view/FileTree';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
+import { BrowserUsePanel } from '../../browser-use';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
+import { usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
+import { useFileOpenResolver } from '../../../hooks/useFileOpenResolver';
+import { authenticatedFetch } from '../../../utils/api';
 import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
 import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import type { Project } from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
+
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
@@ -34,28 +40,28 @@ function MainContent({
   setActiveTab,
   ws,
   sendMessage,
-  latestMessage,
   isMobile,
   onMenuClick,
   isLoading,
   onInputFocusChange,
-  onSessionActive,
-  onSessionInactive,
   onSessionProcessing,
-  onSessionNotProcessing,
+  onSessionIdle,
   processingSessions,
-  onReplaceTemporarySession,
   onNavigateToSession,
+  onSessionEstablished,
   onShowSettings,
   externalMessageUpdate,
+  newSessionTrigger,
 }: MainContentProps) {
   const { preferences } = useUiPreferences();
-  const { autoExpandTools, showRawParameters, showThinking, autoScrollToBottom, sendByCtrlEnter } = preferences;
+  const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
 
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
+  const [browserUseEnabled, setBrowserUseEnabled] = useState(false);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
+  const shouldShowBrowserTab = browserUseEnabled;
 
   const {
     editingFile,
@@ -72,20 +78,59 @@ function MainContent({
     isMobile,
   });
 
-  useEffect(() => {
-    const selectedProjectName = selectedProject?.name;
-    const currentProjectName = currentProject?.name;
+  // Resolves bare/partial file references (e.g. links inside chat messages) to
+  // real project files before opening them in the in-app editor.
+  const resolvedFileOpen = useFileOpenResolver(selectedProject, handleFileOpen);
 
-    if (selectedProject && selectedProjectName !== currentProjectName) {
+  useEffect(() => {
+    // Identify projects by DB `projectId`; the TaskMaster context uses the
+    // same identifier to key its internal maps.
+    const selectedProjectId = selectedProject?.projectId;
+    const currentProjectId = currentProject?.projectId;
+
+    if (selectedProject && selectedProjectId !== currentProjectId) {
       setCurrentProject?.(selectedProject);
     }
-  }, [selectedProject, currentProject?.name, setCurrentProject]);
+  }, [selectedProject, currentProject?.projectId, setCurrentProject]);
 
   useEffect(() => {
     if (!shouldShowTasksTab && activeTab === 'tasks') {
       setActiveTab('chat');
     }
   }, [shouldShowTasksTab, activeTab, setActiveTab]);
+
+  const loadBrowserUseSettings = useCallback(async () => {
+    try {
+      const response = await authenticatedFetch('/api/browser-use/settings');
+      const data = await response.json();
+      setBrowserUseEnabled(Boolean(response.ok && data?.success !== false && data?.data?.settings?.enabled));
+    } catch {
+      setBrowserUseEnabled(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadBrowserUseSettings();
+    window.addEventListener('browserUseSettingsChanged', loadBrowserUseSettings);
+    return () => window.removeEventListener('browserUseSettingsChanged', loadBrowserUseSettings);
+  }, [loadBrowserUseSettings]);
+
+  useEffect(() => {
+    if (!shouldShowBrowserTab && activeTab === 'browser') {
+      setActiveTab('chat');
+    }
+  }, [shouldShowBrowserTab, activeTab, setActiveTab]);
+
+  usePaletteOpsRegister({
+    openFile: (filePath: string) => {
+      setActiveTab('files');
+      handleFileOpen(filePath);
+    },
+    // Opens the editor side panel in place, keeping the current tab (e.g. chat).
+    openFileInEditor: (filePath: string) => {
+      resolvedFileOpen(filePath);
+    },
+  });
 
   if (isLoading) {
     return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
@@ -103,6 +148,7 @@ function MainContent({
         selectedProject={selectedProject}
         selectedSession={selectedSession}
         shouldShowTasksTab={shouldShowTasksTab}
+        shouldShowBrowserTab={shouldShowBrowserTab}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
       />
@@ -116,23 +162,19 @@ function MainContent({
                 selectedSession={selectedSession}
                 ws={ws}
                 sendMessage={sendMessage}
-                latestMessage={latestMessage}
                 onFileOpen={handleFileOpen}
                 onInputFocusChange={onInputFocusChange}
-                onSessionActive={onSessionActive}
-                onSessionInactive={onSessionInactive}
                 onSessionProcessing={onSessionProcessing}
-                onSessionNotProcessing={onSessionNotProcessing}
+                onSessionIdle={onSessionIdle}
                 processingSessions={processingSessions}
-                onReplaceTemporarySession={onReplaceTemporarySession}
                 onNavigateToSession={onNavigateToSession}
+                onSessionEstablished={onSessionEstablished}
                 onShowSettings={onShowSettings}
-                autoExpandTools={autoExpandTools}
                 showRawParameters={showRawParameters}
                 showThinking={showThinking}
-                autoScrollToBottom={autoScrollToBottom}
                 sendByCtrlEnter={sendByCtrlEnter}
                 externalMessageUpdate={externalMessageUpdate}
+                newSessionTrigger={newSessionTrigger}
                 onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
               />
             </ErrorBoundary>
@@ -163,7 +205,11 @@ function MainContent({
 
           {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
 
-          <div className={`h-full overflow-hidden ${activeTab === 'preview' ? 'block' : 'hidden'}`} />
+          {shouldShowBrowserTab && activeTab === 'browser' && (
+            <div className="h-full overflow-hidden">
+              <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
+            </div>
+          )}
 
           {activeTab.startsWith('plugin:') && (
             <div className="h-full overflow-hidden">

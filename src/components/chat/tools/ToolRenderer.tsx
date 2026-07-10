@@ -1,8 +1,13 @@
 import React, { memo, useMemo, useCallback } from 'react';
+
 import type { Project } from '../../../types/app';
 import type { SubagentChildTool } from '../types/types';
+
 import { getToolConfig } from './configs/toolConfigs';
-import { OneLineDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
+import { OneLineDisplay, BashCommandDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
+import { PlanDisplay } from './components/PlanDisplay';
+import { ToolStatusBadge } from './components/ToolStatusBadge';
+import type { ToolStatus } from './components/ToolStatusBadge';
 
 type DiffLine = {
   type: string;
@@ -19,7 +24,6 @@ interface ToolRendererProps {
   onFileOpen?: (filePath: string, diffInfo?: any) => void;
   createDiff?: (oldStr: string, newStr: string) => DiffLine[];
   selectedProject?: Project | null;
-  autoExpandTools?: boolean;
   showRawParameters?: boolean;
   rawToolInput?: string;
   isSubagentContainer?: boolean;
@@ -36,10 +40,30 @@ function getToolCategory(toolName: string): string {
   if (toolName === 'Bash') return 'bash';
   if (['TodoWrite', 'TodoRead'].includes(toolName)) return 'todo';
   if (['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'].includes(toolName)) return 'task';
-  if (toolName === 'Task') return 'agent';  // Subagent task
+  if (toolName === 'Task') return 'agent';
   if (toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode') return 'plan';
   if (toolName === 'AskUserQuestion') return 'question';
   return 'default';
+}
+
+// Exact denial messages from server/claude-sdk.js — other providers can't reliably signal denial
+const CLAUDE_DENIAL_MESSAGES = [
+  'user denied tool use',
+  'tool disallowed by settings',
+  'permission request timed out',
+  'permission request cancelled',
+];
+
+function deriveToolStatus(toolResult: any): ToolStatus {
+  if (!toolResult) return 'running';
+  if (toolResult.isError) {
+    const content = String(toolResult.content || '').toLowerCase().trim();
+    if (CLAUDE_DENIAL_MESSAGES.some((msg) => content.includes(msg))) {
+      return 'denied';
+    }
+    return 'error';
+  }
+  return 'completed';
 }
 
 /**
@@ -55,7 +79,6 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   onFileOpen,
   createDiff,
   selectedProject,
-  autoExpandTools = false,
   showRawParameters = false,
   rawToolInput,
   isSubagentContainer,
@@ -73,6 +96,12 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
     }
   }, [mode, toolInput, toolResult]);
 
+  // Only derive and show status badge on input renders
+  const toolStatus = useMemo(
+    () => mode === 'input' ? deriveToolStatus(toolResult) : undefined,
+    [mode, toolResult],
+  );
+
   const handleAction = useCallback(() => {
     if (displayConfig?.action === 'open-file' && onFileOpen) {
       const value = displayConfig.getValue?.(parsedData) || '';
@@ -82,9 +111,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
 
   // Route subagent containers to dedicated component (after hooks to satisfy Rules of Hooks)
   if (isSubagentContainer && subagentState) {
-    if (mode === 'result') {
-      return null;
-    }
+    if (mode === 'result') return null;
     return (
       <SubagentContainer
         toolInput={toolInput}
@@ -95,6 +122,39 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   }
 
   if (!displayConfig) return null;
+
+  // Bash renders as a Codex-style command row: the command on a single line with
+  // a chevron that expands to show the output inline. The combined view lives on
+  // the input render; the separate result section is suppressed in MessageComponent.
+  if (toolName === 'Bash' && mode === 'input') {
+    const command = typeof parsedData === 'object' && parsedData !== null && 'command' in parsedData
+      ? String(parsedData.command || '')
+      : typeof toolInput === 'string'
+        ? toolInput
+        : typeof rawToolInput === 'string'
+          ? rawToolInput
+          : '';
+    const description = typeof parsedData === 'object' && parsedData !== null && 'description' in parsedData
+      ? String(parsedData.description || '')
+      : undefined;
+    const output = typeof toolResult?.content === 'string'
+      ? toolResult.content
+      : toolResult?.content != null
+        ? String(toolResult.content)
+        : '';
+    return (
+      <BashCommandDisplay
+        command={command}
+        description={description}
+        output={output}
+        isError={Boolean(toolResult?.isError)}
+        status={toolStatus !== 'completed' ? toolStatus : undefined}
+        // Commands stay collapsed by default; only failures auto-expand so they
+        // remain visible.
+        defaultOpen={false}
+      />
+    );
+  }
 
   if (displayConfig.type === 'one-line') {
     const value = displayConfig.getValue?.(parsedData) || '';
@@ -115,6 +175,34 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         wrapText={displayConfig.wrapText}
         colorScheme={displayConfig.colorScheme}
         resultId={mode === 'input' ? `tool-result-${toolId}` : undefined}
+        status={toolStatus !== 'completed' ? toolStatus : undefined}
+      />
+    );
+  }
+
+  if (displayConfig.type === 'plan') {
+    const title = typeof displayConfig.title === 'function'
+      ? displayConfig.title(parsedData)
+      : displayConfig.title || 'Plan';
+
+    const contentProps = displayConfig.getContentProps?.(parsedData, {
+      selectedProject,
+      createDiff,
+      onFileOpen
+    }) || {};
+
+    const isStreaming = mode === 'input' && !toolResult;
+
+    return (
+      <PlanDisplay
+        title={title}
+        content={contentProps.content || ''}
+        defaultOpen={displayConfig.defaultOpen ?? false}
+        isStreaming={isStreaming}
+        showRawParameters={mode === 'input' && showRawParameters}
+        rawContent={rawToolInput}
+        toolName={toolName}
+        toolId={toolId}
       />
     );
   }
@@ -126,7 +214,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
 
     const defaultOpen = displayConfig.defaultOpen !== undefined
       ? displayConfig.defaultOpen
-      : autoExpandTools;
+      : false;
 
     const contentProps = displayConfig.getContentProps?.(parsedData, {
       selectedProject,
@@ -134,7 +222,6 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
       onFileOpen
     }) || {};
 
-    // Build the content component based on contentType
     let contentComponent: React.ReactNode = null;
 
     switch (displayConfig.contentType) {
@@ -211,13 +298,14 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
       }
     }
 
-    // For edit tools, make the title (filename) clickable to open the file
     const handleTitleClick = (toolName === 'Edit' || toolName === 'Write' || toolName === 'ApplyPatch') && contentProps.filePath && onFileOpen
       ? () => onFileOpen(contentProps.filePath, {
           old_string: contentProps.oldContent,
           new_string: contentProps.newContent
         })
       : undefined;
+
+    const badgeElement = toolStatus && toolStatus !== 'completed' ? <ToolStatusBadge status={toolStatus} /> : undefined;
 
     return (
       <CollapsibleDisplay
@@ -226,6 +314,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         title={title}
         defaultOpen={defaultOpen}
         onTitleClick={handleTitleClick}
+        badge={badgeElement}
         showRawParameters={mode === 'input' && showRawParameters}
         rawContent={rawToolInput}
         toolCategory={getToolCategory(toolName)}

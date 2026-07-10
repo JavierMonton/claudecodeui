@@ -1,6 +1,30 @@
-export type SessionProvider = 'claude' | 'cursor' | 'codex' | 'gemini';
+export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode';
 
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | `plugin:${string}`;
+export type ProviderModelOption = {
+  value: string;
+  label: string;
+  description?: string;
+  effort?: {
+    default?: string;
+    values: {
+      value: string;
+      description?: string;
+    }[];
+  };
+};
+
+export type ProviderModelsDefinition = {
+  OPTIONS: ProviderModelOption[];
+  DEFAULT: string;
+};
+
+export type ProviderModelsCacheInfo = {
+  updatedAt: string;
+  expiresAt: string;
+  source: 'memory' | 'disk' | 'fresh';
+};
+
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;
 
 export interface ProjectSession {
   id: string;
@@ -12,8 +36,11 @@ export interface ProjectSession {
   updated_at?: string;
   lastActivity?: string;
   messageCount?: number;
-  __provider?: SessionProvider;
-  __projectName?: string;
+  provider?: LLMProvider;
+  __provider?: LLMProvider;
+  // Tags the session with the owning project's DB `projectId` so UI handlers
+  // (session switching, sidebar focus, etc.) can match against selectedProject.
+  __projectId?: string;
   [key: string]: unknown;
 }
 
@@ -30,41 +57,27 @@ export interface ProjectTaskmasterInfo {
   [key: string]: unknown;
 }
 
+// After the projectName → projectId migration the backend no longer returns a
+// folder-derived `name` string. Projects are now addressed everywhere by the
+// DB-assigned `projectId` (primary key in the `projects` table), and the UI
+// uses the same identifier for routing, state keys and API calls.
 export interface Project {
-  name: string;
+  projectId: string;
   displayName: string;
   fullPath: string;
   path?: string;
+  isStarred?: boolean;
   sessions?: ProjectSession[];
-  cursorSessions?: ProjectSession[];
-  codexSessions?: ProjectSession[];
-  geminiSessions?: ProjectSession[];
   sessionMeta?: ProjectSessionMeta;
   taskmaster?: ProjectTaskmasterInfo;
   [key: string]: unknown;
 }
 
 export interface LoadingProgress {
-  type?: 'loading_progress';
+  kind?: 'loading_progress';
   phase?: string;
   current: number;
   total: number;
   currentProject?: string;
   [key: string]: unknown;
 }
-
-export interface ProjectsUpdatedMessage {
-  type: 'projects_updated';
-  projects: Project[];
-  changedFile?: string;
-  [key: string]: unknown;
-}
-
-export interface LoadingProgressMessage extends LoadingProgress {
-  type: 'loading_progress';
-}
-
-export type AppSocketMessage =
-  | LoadingProgressMessage
-  | ProjectsUpdatedMessage
-  | { type?: string;[key: string]: unknown };

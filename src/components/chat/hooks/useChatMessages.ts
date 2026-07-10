@@ -7,47 +7,124 @@ import type { NormalizedMessage } from '../../../stores/useSessionStore';
 import type { ChatMessage, SubagentChildTool } from '../types/types';
 import { decodeHtmlEntities, unescapeWithMathProtection, formatUsageLimitText } from '../utils/chatFormatting';
 
+function formatToolResultContent(content: unknown): string {
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  const toolUseErrorMatch = /^<tool_use_error>([\s\S]*)<\/tool_use_error>$/.exec(text.trim());
+  return toolUseErrorMatch ? toolUseErrorMatch[1] : text;
+}
+
+type ParsedTaskNotification = {
+  status: string;
+  summary: string;
+  result: string;
+};
+
+/**
+ * Parses a background-agent `<task-notification>` block.
+ *
+ * The harness injects these as user-role messages when a background task stops.
+ * Newer notifications carry extra fields (`<tool-use-id>`, `<note>`, `<usage>`,
+ * and a `<result>` markdown payload) that the previous single-shot regex could
+ * not match, so the whole raw XML block leaked through as plain user text.
+ * Fields are extracted independently so the block renders as an assistant
+ * notification plus, when present, the agent's markdown result.
+ */
+function parseTaskNotification(content: string): ParsedTaskNotification | null {
+  if (!content.trimStart().startsWith('<task-notification>')) {
+    return null;
+  }
+
+  const statusMatch = /<status>([\s\S]*?)<\/status>/.exec(content);
+  const summaryMatch = /<summary>([\s\S]*?)<\/summary>/.exec(content);
+
+  let result = '';
+  const resultOpen = content.indexOf('<result>');
+  if (resultOpen !== -1) {
+    const afterOpen = content.slice(resultOpen + '<result>'.length);
+    const closeIndex = afterOpen.indexOf('</result>');
+    result =
+      closeIndex === -1
+        ? afterOpen.replace(/<\/task-notification>\s*$/, '').trim()
+        : afterOpen.slice(0, closeIndex).trim();
+  }
+
+  return {
+    status: statusMatch?.[1]?.trim() || 'completed',
+    summary: summaryMatch?.[1]?.trim() || 'Background task finished',
+    result,
+  };
+}
+
 /**
  * Convert NormalizedMessage[] from the session store into ChatMessage[]
  * that the existing UI components expect.
  *
- * Internal/system content (e.g. <system-reminder>, <command-name>) is already
- * filtered server-side by the Claude adapter (server/providers/utils.js).
+ * Truly internal/system content is already filtered server-side. Some Claude
+ * transcript artifacts such as local slash commands and compact summaries are
+ * intentionally preserved and annotated so they can render like normal chat.
  */
 export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMessage[] {
   const converted: ChatMessage[] = [];
 
   // First pass: collect tool results for attachment
   const toolResultMap = new Map<string, NormalizedMessage>();
+  const toolUseIds = new Set<string>();
   for (const msg of messages) {
+    if (msg.kind === 'tool_use' && msg.toolId) {
+      toolUseIds.add(msg.toolId);
+    }
+
     if (msg.kind === 'tool_result' && msg.toolId) {
       toolResultMap.set(msg.toolId, msg);
     }
   }
 
   for (const msg of messages) {
+    const sharedMetadata = {
+      displayText: msg.displayText,
+      commandName: msg.commandName,
+      commandMessage: msg.commandMessage,
+      commandArgs: msg.commandArgs,
+      isLocalCommand: msg.isLocalCommand,
+      isLocalCommandStdout: msg.isLocalCommandStdout,
+      isCompactSummary: msg.isCompactSummary,
+    };
+
     switch (msg.kind) {
       case 'text': {
         const content = msg.content || '';
-        if (!content.trim()) continue;
+        const images = Array.isArray(msg.images) && msg.images.length > 0 ? msg.images : undefined;
+        if (!content.trim() && !images) continue;
 
         if (msg.role === 'user') {
           // Parse task notifications
-          const taskNotifRegex = /<task-notification>\s*<task-id>[^<]*<\/task-id>\s*<output-file>[^<]*<\/output-file>\s*<status>([^<]*)<\/status>\s*<summary>([^<]*)<\/summary>\s*<\/task-notification>/g;
-          const taskNotifMatch = taskNotifRegex.exec(content);
-          if (taskNotifMatch) {
+          const taskNotif = parseTaskNotification(content);
+          if (taskNotif) {
             converted.push({
               type: 'assistant',
-              content: taskNotifMatch[2]?.trim() || 'Background task finished',
+              content: taskNotif.summary,
               timestamp: msg.timestamp,
               isTaskNotification: true,
-              taskStatus: taskNotifMatch[1]?.trim() || 'completed',
+              taskStatus: taskNotif.status,
+              ...sharedMetadata,
             });
+            // Render the agent's result as a normal assistant message so its
+            // markdown displays correctly instead of leaking raw XML.
+            if (taskNotif.result) {
+              converted.push({
+                type: 'assistant',
+                content: formatUsageLimitText(unescapeWithMathProtection(decodeHtmlEntities(taskNotif.result))),
+                timestamp: msg.timestamp,
+                ...sharedMetadata,
+              });
+            }
           } else {
             converted.push({
               type: 'user',
               content: unescapeWithMathProtection(decodeHtmlEntities(content)),
               timestamp: msg.timestamp,
+              images,
+              ...sharedMetadata,
             });
           }
         } else {
@@ -58,6 +135,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             type: 'assistant',
             content: text,
             timestamp: msg.timestamp,
+            ...sharedMetadata,
           });
         }
         break;
@@ -83,7 +161,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
         const toolResult = tr
           ? {
-              content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+              content: formatToolResultContent(tr.content),
               isError: Boolean(tr.isError),
               toolUseResult: (tr as any).toolUseResult,
             }
@@ -106,6 +184,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
                 isComplete: Boolean(toolResult),
               }
             : undefined,
+          ...sharedMetadata,
         });
         break;
       }
@@ -117,6 +196,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             content: unescapeWithMathProtection(msg.content),
             timestamp: msg.timestamp,
             isThinking: true,
+            ...sharedMetadata,
           });
         }
         break;
@@ -126,6 +206,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           type: 'error',
           content: msg.content || 'Unknown error',
           timestamp: msg.timestamp,
+          ...sharedMetadata,
         });
         break;
 
@@ -135,6 +216,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           content: msg.content || '',
           timestamp: msg.timestamp,
           isInteractivePrompt: true,
+          ...sharedMetadata,
         });
         break;
 
@@ -145,6 +227,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           timestamp: msg.timestamp,
           isTaskNotification: true,
           taskStatus: msg.status || 'completed',
+          ...sharedMetadata,
         });
         break;
 
@@ -155,6 +238,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             content: msg.content,
             timestamp: msg.timestamp,
             isStreaming: true,
+            ...sharedMetadata,
           });
         }
         break;
@@ -171,8 +255,34 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
         break;
 
       // tool_result is handled via attachment to tool_use above
-      case 'tool_result':
+      case 'tool_result': {
+        if (msg.toolId && toolUseIds.has(msg.toolId)) {
+          break;
+        }
+
+        // A result with a toolId but no matching tool_use in the loaded set is
+        // almost always a tool_use/tool_result pair split across a pagination
+        // boundary (older page not loaded yet). Rendering its raw content here
+        // produces an unstyled dump that "fixes itself" once the older page
+        // loads; skip it and let it attach to its tool_use when that arrives.
+        if (msg.toolId) {
+          break;
+        }
+
+        const content = formatToolResultContent(msg.content || '');
+        if (!content.trim()) {
+          break;
+        }
+
+        converted.push({
+          type: msg.isError ? 'error' : 'assistant',
+          content,
+          timestamp: msg.timestamp,
+          toolId: msg.toolId,
+          ...sharedMetadata,
+        });
         break;
+      }
 
       default:
         break;

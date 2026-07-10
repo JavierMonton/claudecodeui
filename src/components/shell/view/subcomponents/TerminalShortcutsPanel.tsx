@@ -26,6 +26,7 @@ const MOBILE_KEYS: Shortcut[] = [
   { type: 'arrow', id: 'arrow-down', sequence: '\x1b[B', icon: 'down' },
   { type: 'arrow', id: 'arrow-left', sequence: '\x1b[D', icon: 'left' },
   { type: 'arrow', id: 'arrow-right', sequence: '\x1b[C', icon: 'right' },
+  { type: 'key', id: 'ctrl-c', label: 'Ctrl+C', sequence: '\x03' },
 ];
 
 const ARROW_ICONS = {
@@ -55,7 +56,7 @@ export default function TerminalShortcutsPanel({
   wsRef,
   terminalRef,
   isConnected,
-  bottomOffset = 'bottom-14',
+  bottomOffset = 'bottom-0',
 }: TerminalShortcutsPanelProps) {
   const { t } = useTranslation('settings');
   const [ctrlActive, setCtrlActive] = useState(false);

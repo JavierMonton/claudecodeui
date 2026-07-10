@@ -1,21 +1,30 @@
-import { Folder, FolderPlus, MessageSquare, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
+import { Activity, Archive, Folder, FolderPlus, MessageSquare, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
 import type { TFunction } from 'i18next';
-import { Button, Input } from '../../../../shared/view/ui';
+
+import { Button, Input, Tooltip } from '../../../../shared/view/ui';
+import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '../../../../constants/branding';
 import { IS_PLATFORM } from '../../../../constants/config';
 import { cn } from '../../../../lib/utils';
+import type { SidebarSearchMode } from '../../types/types';
 
-type SearchMode = 'projects' | 'conversations';
+import GitHubStarBadge from './GitHubStarBadge';
+
+const MOD_KEY =
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
 
 type SidebarHeaderProps = {
   isPWA: boolean;
   isMobile: boolean;
   isLoading: boolean;
   projectsCount: number;
+  runningSessionsCount: number;
+  archivedSessionsCount: number;
+  isArchivedSessionsLoading: boolean;
   searchFilter: string;
   onSearchFilterChange: (value: string) => void;
   onClearSearchFilter: () => void;
-  searchMode: SearchMode;
-  onSearchModeChange: (mode: SearchMode) => void;
+  searchMode: SidebarSearchMode;
+  onSearchModeChange: (mode: SidebarSearchMode) => void;
   onRefresh: () => void;
   isRefreshing: boolean;
   onCreateProject: () => void;
@@ -28,6 +37,9 @@ export default function SidebarHeader({
   isMobile,
   isLoading,
   projectsCount,
+  runningSessionsCount,
+  archivedSessionsCount,
+  isArchivedSessionsLoading,
   searchFilter,
   onSearchFilterChange,
   onClearSearchFilter,
@@ -39,6 +51,16 @@ export default function SidebarHeader({
   onCollapseSidebar,
   t,
 }: SidebarHeaderProps) {
+  const showSearchTools = (projectsCount > 0 || runningSessionsCount > 0 || archivedSessionsCount > 0 || isArchivedSessionsLoading) && !isLoading;
+  const searchPlaceholder = searchMode === 'conversations'
+    ? t('search.conversationsPlaceholder')
+    : searchMode === 'archived'
+      ? t('search.archivedPlaceholder', 'Search archived sessions...')
+      : searchMode === 'running'
+        ? t('search.runningPlaceholder', 'Search running sessions...')
+        : t('projects.searchPlaceholder');
+  const runningBadgeText = runningSessionsCount > 99 ? '99+' : String(runningSessionsCount);
+
   const LogoBlock = () => (
     <div className="flex min-w-0 items-center gap-2.5">
       <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-primary/90 shadow-sm">
@@ -46,7 +68,12 @@ export default function SidebarHeader({
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
       </div>
-      <h1 className="truncate text-sm font-semibold tracking-tight text-foreground">{t('app.title')}</h1>
+      <h1
+        className="truncate text-sm font-bold tracking-tight text-foreground"
+        style={{ fontFamily: CLOUDCLI_WORDMARK_FONT_FAMILY }}
+      >
+        {t('app.title')}
+      </h1>
     </div>
   );
 
@@ -106,8 +133,10 @@ export default function SidebarHeader({
           </div>
         </div>
 
+        <GitHubStarBadge />
+
         {/* Search bar */}
-        {projectsCount > 0 && !isLoading && (
+        {showSearchTools && (
           <div className="mt-2.5 space-y-2">
             {/* Search mode toggle */}
             <div className="flex rounded-lg bg-muted/50 p-0.5">
@@ -115,7 +144,7 @@ export default function SidebarHeader({
                 onClick={() => onSearchModeChange('projects')}
                 aria-pressed={searchMode === 'projects'}
                 className={cn(
-                  "flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-all",
+                  "flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-normal transition-all",
                   searchMode === 'projects'
                     ? "bg-background shadow-sm text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -128,7 +157,7 @@ export default function SidebarHeader({
                 onClick={() => onSearchModeChange('conversations')}
                 aria-pressed={searchMode === 'conversations'}
                 className={cn(
-                  "flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-all",
+                  "flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-normal transition-all",
                   searchMode === 'conversations'
                     ? "bg-background shadow-sm text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -137,17 +166,56 @@ export default function SidebarHeader({
                 <MessageSquare className="h-3 w-3" />
                 {t('search.modeConversations')}
               </button>
+              <Tooltip content={t('search.runningTooltip', 'Running sessions')} position="top">
+                <button
+                  onClick={() => onSearchModeChange('running')}
+                  aria-pressed={searchMode === 'running'}
+                  aria-label={t('search.runningTooltip', 'Running sessions')}
+                  title={t('search.runningTooltip', 'Running sessions')}
+                  className={cn(
+                    "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-normal transition-all",
+                    searchMode === 'running'
+                      ? "bg-background shadow-sm text-foreground ring-1 ring-emerald-500/15"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <span className="relative flex h-3 w-3 items-center justify-center">
+                    <Activity className={cn("h-3 w-3", runningSessionsCount > 0 && "text-emerald-500")} />
+                    {runningSessionsCount > 0 && (
+                      <span className="absolute -right-2.5 -top-2 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-emerald-500 px-0.5 text-[8px] font-semibold leading-none text-white shadow-sm ring-1 ring-background">
+                        {runningBadgeText}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              </Tooltip>
+              <Tooltip content={t('search.archiveOnlyTooltip', 'Archive only')} position="top">
+                <button
+                  onClick={() => onSearchModeChange('archived')}
+                  aria-pressed={searchMode === 'archived'}
+                  aria-label={t('search.archiveOnlyTooltip', 'Archive only')}
+                  title={t('search.archiveOnlyTooltip', 'Archive only')}
+                  className={cn(
+                    "flex items-center justify-center rounded-md px-2.5 py-1.5 text-xs font-normal transition-all",
+                    searchMode === 'archived'
+                      ? "bg-background shadow-sm text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <Archive className="h-3 w-3" />
+                </button>
+              </Tooltip>
             </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
               <Input
                 type="text"
-                placeholder={searchMode === 'conversations' ? t('search.conversationsPlaceholder') : t('projects.searchPlaceholder')}
+                placeholder={searchPlaceholder}
                 value={searchFilter}
                 onChange={(event) => onSearchFilterChange(event.target.value)}
-                className="nav-search-input h-9 rounded-xl border-0 pl-9 pr-8 text-sm transition-all duration-200 placeholder:text-muted-foreground/40 focus-visible:ring-0 focus-visible:ring-offset-0"
+                className="nav-search-input h-9 rounded-xl border-0 pl-9 pr-14 text-sm transition-all duration-200 placeholder:text-muted-foreground/40 focus-visible:ring-0 focus-visible:ring-offset-0"
               />
-              {searchFilter && (
+              {searchFilter ? (
                 <button
                   onClick={onClearSearchFilter}
                   aria-label={t('tooltips.clearSearch')}
@@ -155,6 +223,15 @@ export default function SidebarHeader({
                 >
                   <X className="h-3 w-3 text-muted-foreground" />
                 </button>
+              ) : (
+                <kbd
+                  aria-hidden
+                  title={t('tooltips.openCommandPalette')}
+                  className="pointer-events-none absolute right-2.5 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground md:inline-flex"
+                >
+                  {MOD_KEY}
+                  <span>K</span>
+                </kbd>
               )}
             </div>
           </div>
@@ -200,14 +277,14 @@ export default function SidebarHeader({
         </div>
 
         {/* Mobile search */}
-        {projectsCount > 0 && !isLoading && (
+        {showSearchTools && (
           <div className="mt-2.5 space-y-2">
             <div className="flex rounded-lg bg-muted/50 p-0.5">
               <button
                 onClick={() => onSearchModeChange('projects')}
                 aria-pressed={searchMode === 'projects'}
                 className={cn(
-                  "flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-all",
+                  "flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-normal transition-all",
                   searchMode === 'projects'
                     ? "bg-background shadow-sm text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -220,7 +297,7 @@ export default function SidebarHeader({
                 onClick={() => onSearchModeChange('conversations')}
                 aria-pressed={searchMode === 'conversations'}
                 className={cn(
-                  "flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-all",
+                  "flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-normal transition-all",
                   searchMode === 'conversations'
                     ? "bg-background shadow-sm text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -229,12 +306,52 @@ export default function SidebarHeader({
                 <MessageSquare className="h-3 w-3" />
                 {t('search.modeConversations')}
               </button>
+              <Tooltip content={t('search.runningTooltip', 'Running sessions')} position="top">
+                <button
+                  onClick={() => onSearchModeChange('running')}
+                  aria-pressed={searchMode === 'running'}
+                  aria-label={t('search.runningTooltip', 'Running sessions')}
+                  title={t('search.runningTooltip', 'Running sessions')}
+                  className={cn(
+                    "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-normal transition-all",
+                    searchMode === 'running'
+                      ? "bg-background shadow-sm text-foreground ring-1 ring-emerald-500/15"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <span className="relative flex h-3 w-3 items-center justify-center">
+                    <Activity className={cn("h-3 w-3", runningSessionsCount > 0 && "text-emerald-500")} />
+                    {runningSessionsCount > 0 && (
+                      <span className="absolute -right-2.5 -top-2 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-emerald-500 px-0.5 text-[8px] font-semibold leading-none text-white shadow-sm ring-1 ring-background">
+                        {runningBadgeText}
+                      </span>
+                    )}
+                  </span>
+                  <span className="sr-only">{t('search.modeRunning', 'Running')}</span>
+                </button>
+              </Tooltip>
+              <Tooltip content={t('search.archiveOnlyTooltip', 'Archive only')} position="top">
+                <button
+                  onClick={() => onSearchModeChange('archived')}
+                  aria-pressed={searchMode === 'archived'}
+                  aria-label={t('search.archiveOnlyTooltip', 'Archive only')}
+                  title={t('search.archiveOnlyTooltip', 'Archive only')}
+                  className={cn(
+                    "flex items-center justify-center rounded-md px-2.5 py-1.5 text-xs font-normal transition-all",
+                    searchMode === 'archived'
+                      ? "bg-background shadow-sm text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <Archive className="h-3 w-3" />
+                </button>
+              </Tooltip>
             </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/50" />
               <Input
                 type="text"
-                placeholder={searchMode === 'conversations' ? t('search.conversationsPlaceholder') : t('projects.searchPlaceholder')}
+                placeholder={searchPlaceholder}
                 value={searchFilter}
                 onChange={(event) => onSearchFilterChange(event.target.value)}
                 className="nav-search-input h-10 rounded-xl border-0 pl-10 pr-9 text-sm transition-all duration-200 placeholder:text-muted-foreground/40 focus-visible:ring-0 focus-visible:ring-offset-0"

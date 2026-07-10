@@ -67,6 +67,32 @@ import deCodeEditor from './locales/de/codeEditor.json';
 // eslint-disable-next-line import-x/order
 import deTasks from './locales/de/tasks.json';
 
+import trCommon from './locales/tr/common.json';
+import trSettings from './locales/tr/settings.json';
+import trAuth from './locales/tr/auth.json';
+import trSidebar from './locales/tr/sidebar.json';
+import trChat from './locales/tr/chat.json';
+import trCodeEditor from './locales/tr/codeEditor.json';
+// eslint-disable-next-line import-x/order
+import trTasks from './locales/tr/tasks.json';
+import itCommon from './locales/it/common.json';
+import itSettings from './locales/it/settings.json';
+import itAuth from './locales/it/auth.json';
+import itSidebar from './locales/it/sidebar.json';
+import itChat from './locales/it/chat.json';
+import itCodeEditor from './locales/it/codeEditor.json';
+// eslint-disable-next-line import-x/order
+import itTasks from './locales/it/tasks.json';
+
+import zhTWCommon from './locales/zh-TW/common.json';
+import zhTWSettings from './locales/zh-TW/settings.json';
+import zhTWAuth from './locales/zh-TW/auth.json';
+import zhTWSidebar from './locales/zh-TW/sidebar.json';
+import zhTWChat from './locales/zh-TW/chat.json';
+import zhTWCodeEditor from './locales/zh-TW/codeEditor.json';
+// eslint-disable-next-line import-x/order
+import zhTWTasks from './locales/zh-TW/tasks.json';
+
 // Import supported languages configuration
 import { languages } from './languages.js';
 
@@ -143,6 +169,33 @@ i18n
         codeEditor: deCodeEditor,
         tasks: deTasks,
       },
+      tr: {
+        common: trCommon,
+        settings: trSettings,
+        auth: trAuth,
+        sidebar: trSidebar,
+        chat: trChat,
+        codeEditor: trCodeEditor,
+        tasks: trTasks,
+      },
+      it: {
+        common: itCommon,
+        settings: itSettings,
+        auth: itAuth,
+        sidebar: itSidebar,
+        chat: itChat,
+        codeEditor: itCodeEditor,
+        tasks: itTasks,
+      },
+      'zh-TW': {
+        common: zhTWCommon,
+        settings: zhTWSettings,
+        auth: zhTWAuth,
+        sidebar: zhTWSidebar,
+        chat: zhTWChat,
+        codeEditor: zhTWCodeEditor,
+        tasks: zhTWTasks,
+      },
     },
 
     // Default language
@@ -152,7 +205,7 @@ i18n
     fallbackLng: 'en',
 
     // Enable debug mode in development (logs missing keys to console)
-    debug: import.meta.env.DEV,
+    debug: false,
 
     // Namespaces - load only what's needed
     ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks'],

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../../utils/api';
 import type { CodeEditorFile } from '../types/types';
 import { isBinaryFile } from '../utils/binaryFile';
+import { getPreviewKind } from '../utils/previewableFile';
 
 type UseCodeEditorDocumentParams = {
   file: CodeEditorFile;
@@ -23,7 +24,13 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isBinary, setIsBinary] = useState(false);
-  const fileProjectName = file.projectName ?? projectPath;
+  // Some binaries (images, PDFs, audio, video) can be rendered natively, so the
+  // editor shows an inline preview instead of the generic binary placeholder.
+  const previewKind = getPreviewKind(file.name);
+  // `fileProjectId` is the DB primary key passed down from the editor sidebar;
+  // the fallback to `projectPath` preserves older callers that didn't yet
+  // propagate the identifier.
+  const fileProjectId = file.projectId ?? projectPath;
   const filePath = file.path;
   const fileName = file.name;
   const fileDiffNewString = file.diffInfo?.new_string;
@@ -35,8 +42,19 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
         setLoading(true);
         setIsBinary(false);
 
+        // Natively previewable media (image/pdf/audio/video) is rendered by
+        // CodeEditorMediaPreview, so there is nothing to read as text here.
+        // Clear any buffer left over from a previously opened text file so a
+        // stray save can't write stale content over the binary file.
+        if (getPreviewKind(file.name)) {
+          setContent('');
+          setLoading(false);
+          return;
+        }
+
         // Check if file is binary by extension
         if (isBinaryFile(file.name)) {
+          setContent('');
           setIsBinary(true);
           setLoading(false);
           return;
@@ -49,11 +67,11 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
           return;
         }
 
-        if (!fileProjectName) {
+        if (!fileProjectId) {
           throw new Error('Missing project identifier');
         }
 
-        const response = await api.readFile(fileProjectName, filePath);
+        const response = await api.readFile(fileProjectId, filePath);
         if (!response.ok) {
           throw new Error(`Failed to load file: ${response.status} ${response.statusText}`);
         }
@@ -70,18 +88,24 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     };
 
     loadFileContent();
-  }, [file.diffInfo, file.name, fileDiffNewString, fileDiffOldString, fileName, filePath, fileProjectName]);
+  }, [file.diffInfo, file.name, fileDiffNewString, fileDiffOldString, fileName, filePath, fileProjectId]);
 
   const handleSave = useCallback(async () => {
+    // Preview-only and binary files have no editable text buffer; never write
+    // them back (e.g. via Cmd/Ctrl+S) or we'd corrupt the file on disk.
+    if (previewKind || isBinaryFile(fileName)) {
+      return;
+    }
+
     setSaving(true);
     setSaveError(null);
 
     try {
-      if (!fileProjectName) {
+      if (!fileProjectId) {
         throw new Error('Missing project identifier');
       }
 
-      const response = await api.saveFile(fileProjectName, filePath, content);
+      const response = await api.saveFile(fileProjectId, filePath, content);
 
       if (!response.ok) {
         const contentType = response.headers.get('content-type');
@@ -106,7 +130,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     } finally {
       setSaving(false);
     }
-  }, [content, filePath, fileProjectName]);
+  }, [content, filePath, fileProjectId, previewKind, fileName]);
 
   const handleDownload = useCallback(() => {
     const blob = new Blob([content], { type: 'text/plain' });
@@ -131,6 +155,8 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     saveSuccess,
     saveError,
     isBinary,
+    previewKind,
+    fileProjectId,
     handleSave,
     handleDownload,
   };

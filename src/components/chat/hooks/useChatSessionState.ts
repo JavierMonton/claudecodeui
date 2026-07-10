@@ -1,30 +1,32 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
+
 import { authenticatedFetch } from '../../../utils/api';
-import type { ChatMessage, Provider } from '../types/types';
-import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
-import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
-import { normalizedToChatMessages } from './useChatMessages';
+import type { MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
+import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
+import type { ChatMessage } from '../types/types';
+import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
+
+import { normalizedToChatMessages } from './useChatMessages';
 
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
-
-type PendingViewSession = {
-  sessionId: string | null;
-  startedAt: number;
-};
 
 interface UseChatSessionStateArgs {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
-  autoScrollToBottom?: boolean;
   externalMessageUpdate?: number;
-  processingSessions?: Set<string>;
+  newSessionTrigger?: number;
+  processingSessions?: SessionActivityMap;
+  onSessionIdle?: MarkSessionIdle;
   resetStreamingState: () => void;
-  pendingViewSessionRef: MutableRefObject<PendingViewSession | null>;
+  /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
+  statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
+  /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
+  lastSeqRef: MutableRefObject<Map<string, number>>;
   sessionStore: SessionStore;
 }
 
@@ -40,7 +42,7 @@ interface ScrollRestoreState {
 function chatMessageToNormalized(
   msg: ChatMessage,
   sessionId: string,
-  provider: SessionProvider,
+  provider: LLMProvider,
 ): NormalizedMessage | null {
   const id = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const ts = msg.timestamp instanceof Date
@@ -81,6 +83,9 @@ function chatMessageToNormalized(
     kind: 'text',
     role: msg.type === 'user' ? 'user' : 'assistant',
     content: msg.content || '',
+    // Keep attachment references on the local echo so the user bubble shows
+    // its images immediately, before the server-backed copy replaces it.
+    images: Array.isArray(msg.images) && msg.images.length > 0 ? msg.images : undefined,
   } as NormalizedMessage;
 }
 
@@ -93,24 +98,23 @@ export function useChatSessionState({
   selectedSession,
   ws,
   sendMessage,
-  autoScrollToBottom,
   externalMessageUpdate,
+  newSessionTrigger,
   processingSessions,
+  onSessionIdle,
   resetStreamingState,
-  pendingViewSessionRef,
+  statusCheckSentAtRef,
+  lastSeqRef,
   sessionStore,
 }: UseChatSessionStateArgs) {
-  const [isLoading, setIsLoading] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
-  const [canAbortSession, setCanAbortSession] = useState(false);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
   const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGES);
-  const [claudeStatus, setClaudeStatus] = useState<{ text: string; tokens: number; can_interrupt: boolean } | null>(null);
   const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
   const [isLoadingAllMessages, setIsLoadingAllMessages] = useState(false);
   const [loadAllJustFinished, setLoadAllJustFinished] = useState(false);
@@ -118,6 +122,7 @@ export function useChatSessionState({
   const [viewHiddenCount, setViewHiddenCount] = useState(0);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const wasNearTopRef = useRef(false);
   const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
   const searchScrollActiveRef = useRef(false);
   const isLoadingSessionRef = useRef(false);
@@ -131,15 +136,98 @@ export function useChatSessionState({
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
+  /**
+   * Tracks the last processed value from `useProjectsState.newSessionTrigger`.
+   *
+   * The trigger itself is intentionally increment-only and routed via:
+   * useProjectsState -> AppContent -> MainContent -> ChatInterface -> this hook.
+   * We compare values to ensure each explicit New Session click runs exactly one
+   * reset pass in this local chat state domain.
+   */
+  const previousNewSessionTriggerRef = useRef(newSessionTrigger ?? 0);
 
   const createDiff = useMemo<DiffCalculator>(() => createCachedDiffCalculator(), []);
+
+  useEffect(() => {
+    const trigger = newSessionTrigger ?? 0;
+    if (trigger === previousNewSessionTriggerRef.current) {
+      return;
+    }
+    previousNewSessionTriggerRef.current = trigger;
+
+    /**
+     * Consumer-side reset for explicit New Session intent.
+     *
+     * Why this is essential:
+     * - Chat keeps local state that is not fully derived from `selectedSession`:
+     *   `currentSessionId`, `pendingUserMessage`, streaming/status flags, message
+     *   pagination/scroll bookkeeping, and provider-specific sessionStorage keys.
+     * - If the user clicks New Session while already on the same route with no
+     *   selected session, parent state updates can be idempotent and this local
+     *   state would otherwise persist, making the click appear to "do nothing".
+     *
+     * What this reset guarantees:
+     * - A deterministic clean draft state on every New Session click.
+     * - No dependence on route/tab/session-object identity changes.
+     * - No coupling to unrelated external update signals.
+     */
+    resetStreamingState();
+    setCurrentSessionId(null);
+    setPendingUserMessage(null);
+    messagesOffsetRef.current = 0;
+    setHasMoreMessages(false);
+    setTotalMessages(0);
+    
+    setTokenBudget(null);
+    setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
+    setAllMessagesLoaded(false);
+    allMessagesLoadedRef.current = false;
+    setIsLoadingAllMessages(false);
+    setLoadAllJustFinished(false);
+    setShowLoadAllOverlay(false);
+    setViewHiddenCount(0);
+    setSearchTarget(null);
+    wasNearTopRef.current = false;
+    searchScrollActiveRef.current = false;
+    topLoadLockRef.current = false;
+    pendingScrollRestoreRef.current = null;
+    pendingInitialScrollRef.current = true;
+    lastLoadedSessionKeyRef.current = null;
+
+    if (loadAllOverlayTimerRef.current) {
+      clearTimeout(loadAllOverlayTimerRef.current);
+      loadAllOverlayTimerRef.current = null;
+    }
+    if (loadAllFinishedTimerRef.current) {
+      clearTimeout(loadAllFinishedTimerRef.current);
+      loadAllFinishedTimerRef.current = null;
+    }
+  }, [newSessionTrigger, onSessionIdle, resetStreamingState]);
+
+  /* ---------------------------------------------------------------- */
+  /*  Derive processing state for the viewed session                  */
+  /* ---------------------------------------------------------------- */
+
+  const activeSessionId = selectedSession?.id || currentSessionId || null;
+
+  // The activity indicator always reflects the latest status of the session
+  // being viewed — never stale local UI state from the last time it was
+  // open. Session ids are concrete before any send, so no pending
+  // placeholder entry exists anymore.
+  const sessionActivity = (activeSessionId && processingSessions?.get(activeSessionId)) || null;
+  const isProcessing = sessionActivity !== null;
+  const canAbortSession = isProcessing && sessionActivity.canInterrupt;
+
+  // Ref mirror so effects can read the latest map without re-running on
+  // every activity transition.
+  const processingSessionsRef = useRef(processingSessions);
+  processingSessionsRef.current = processingSessions;
 
   /* ---------------------------------------------------------------- */
   /*  Derive chatMessages from the store                              */
   /* ---------------------------------------------------------------- */
-
-  const activeSessionId = selectedSession?.id || currentSessionId || null;
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
+  const flushedPendingUserMessageRef = useRef<ChatMessage | null>(null);
 
   // Tell the store which session we're viewing so it only re-renders for this one
   const prevActiveForStoreRef = useRef<string | null>(null);
@@ -148,17 +236,29 @@ export function useChatSessionState({
     sessionStore.setActiveSession(activeSessionId);
   }
 
-  // When a real session ID arrives and we have a pending user message, flush it to the store
-  const prevActiveSessionRef = useRef<string | null>(null);
-  if (activeSessionId && activeSessionId !== prevActiveSessionRef.current && pendingUserMessage) {
-    const prov = (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
+  useEffect(() => {
+    if (!pendingUserMessage) {
+      flushedPendingUserMessageRef.current = null;
+      return;
+    }
+
+    if (!activeSessionId) {
+      return;
+    }
+
+    if (flushedPendingUserMessageRef.current === pendingUserMessage) {
+      return;
+    }
+
+    const prov = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
     const normalized = chatMessageToNormalized(pendingUserMessage, activeSessionId, prov);
     if (normalized) {
       sessionStore.appendRealtime(activeSessionId, normalized);
     }
+
+    flushedPendingUserMessageRef.current = pendingUserMessage;
     setPendingUserMessage(null);
-  }
-  prevActiveSessionRef.current = activeSessionId;
+  }, [activeSessionId, pendingUserMessage, sessionStore]);
 
   const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : [];
 
@@ -189,7 +289,7 @@ export function useChatSessionState({
       setPendingUserMessage(msg);
       return;
     }
-    const prov = (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
+    const prov = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
     const normalized = chatMessageToNormalized(msg, activeSessionId, prov);
     if (normalized) {
       sessionStore.appendRealtime(activeSessionId, normalized);
@@ -231,26 +331,42 @@ export function useChatSessionState({
       if (allMessagesLoadedRef.current) return false;
       if (!hasMoreMessages || !selectedSession || !selectedProject) return false;
 
-      const sessionProvider = selectedSession.__provider || 'claude';
-      if (sessionProvider === 'cursor') return false;
-
       isLoadingMoreRef.current = true;
       const previousScrollHeight = container.scrollHeight;
       const previousScrollTop = container.scrollTop;
 
       try {
         const slot = await sessionStore.fetchMore(selectedSession.id, {
-          provider: sessionProvider as SessionProvider,
-          projectName: selectedProject.name,
-          projectPath: selectedProject.fullPath || selectedProject.path || '',
           limit: MESSAGES_PER_PAGE,
         });
-        if (!slot || slot.serverMessages.length === 0) return false;
+        if (!slot) return false;
+        if (slot.serverMessages.length === 0) {
+          if (!slot.hasMore) {
+            setHasMoreMessages(false);
+            allMessagesLoadedRef.current = true;
+            setAllMessagesLoaded(true);
+            if (loadAllOverlayTimerRef.current) {
+              clearTimeout(loadAllOverlayTimerRef.current);
+              loadAllOverlayTimerRef.current = null;
+            }
+            setShowLoadAllOverlay(false);
+          }
+          return false;
+        }
 
         pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
         setVisibleMessageCount((prev) => prev + MESSAGES_PER_PAGE);
+        if (!slot.hasMore) {
+          allMessagesLoadedRef.current = true;
+          setAllMessagesLoaded(true);
+          if (loadAllOverlayTimerRef.current) {
+            clearTimeout(loadAllOverlayTimerRef.current);
+            loadAllOverlayTimerRef.current = null;
+          }
+          setShowLoadAllOverlay(false);
+        }
         return true;
       } finally {
         isLoadingMoreRef.current = false;
@@ -266,8 +382,25 @@ export function useChatSessionState({
     const nearBottom = isNearBottom();
     setIsUserScrolledUp(!nearBottom);
 
+    const scrolledNearTop = container.scrollTop < 100;
+
+    // "Load all" prompt: appear (with fade-in) when the user reaches the top
+    if (scrolledNearTop && hasMoreMessages && !allMessagesLoadedRef.current) {
+      if (!wasNearTopRef.current) {
+        wasNearTopRef.current = true;
+        if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
+
+        setShowLoadAllOverlay(true);
+        loadAllOverlayTimerRef.current = setTimeout(() => {
+          setShowLoadAllOverlay(false);
+          loadAllOverlayTimerRef.current = null;
+        }, 2500);
+      }
+    } else if (!scrolledNearTop) {
+      wasNearTopRef.current = false;
+    }
+
     if (!allMessagesLoadedRef.current) {
-      const scrolledNearTop = container.scrollTop < 100;
       if (!scrolledNearTop) { topLoadLockRef.current = false; return; }
       if (topLoadLockRef.current) {
         if (container.scrollTop > 20) topLoadLockRef.current = false;
@@ -276,7 +409,7 @@ export function useChatSessionState({
       const didLoad = await loadOlderMessages(container);
       if (didLoad) topLoadLockRef.current = true;
     }
-  }, [isNearBottom, loadOlderMessages]);
+  }, [hasMoreMessages, isNearBottom, loadOlderMessages]);
 
   useLayoutEffect(() => {
     if (!pendingScrollRestoreRef.current || !scrollContainerRef.current) return;
@@ -295,27 +428,65 @@ export function useChatSessionState({
     }
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
+    wasNearTopRef.current = false;
     setIsUserScrolledUp(false);
-  }, [selectedProject?.name, selectedSession?.id]);
+  }, [selectedProject?.projectId, selectedSession?.id]);
 
-  // Initial scroll to bottom
+  // Initial scroll to bottom — robust to lazy content reflow.
+  // The previous implementation fired one scrollToBottom() at +200ms and
+  // cleared the pending flag. When markdown blocks, code highlighting, or
+  // images finished rendering after that window, scrollHeight grew but
+  // nothing re-anchored the viewport, leaving the chat tab visually
+  // "scrolled way up" with the latest assistant message off-screen.
+  //
+  // This version re-scrolls every animation frame while scrollHeight is
+  // still growing, capped at ~1s (60 frames) or 3 consecutive stable
+  // frames. Cancels cleanly on session change via the pending flag.
   useEffect(() => {
     if (!pendingInitialScrollRef.current || !scrollContainerRef.current || isLoadingSessionMessages) return;
     if (chatMessages.length === 0) { pendingInitialScrollRef.current = false; return; }
-    pendingInitialScrollRef.current = false;
-    if (!searchScrollActiveRef.current) setTimeout(() => scrollToBottom(), 200);
+    if (searchScrollActiveRef.current) { pendingInitialScrollRef.current = false; return; }
+
+    const container = scrollContainerRef.current;
+    let frame = 0;
+    let lastHeight = 0;
+    let stableCount = 0;
+    let rafId = 0;
+
+    const tick = () => {
+      if (!pendingInitialScrollRef.current || !scrollContainerRef.current) return;
+      container.scrollTop = container.scrollHeight;
+      if (container.scrollHeight === lastHeight) {
+        stableCount++;
+      } else {
+        stableCount = 0;
+        lastHeight = container.scrollHeight;
+      }
+      frame++;
+      if (stableCount < 3 && frame < 60) {
+        rafId = requestAnimationFrame(tick);
+      } else {
+        pendingInitialScrollRef.current = false;
+      }
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, [chatMessages.length, isLoadingSessionMessages, scrollToBottom]);
 
   // Main session loading effect — store-based
   useEffect(() => {
     if (!selectedSession || !selectedProject) {
+      // A freshly created session can be mid-run before the router has a
+      // canonical selectedSession (the URL effect synthesizes one on the
+      // next render). Keep the active view intact instead of wiping it.
+      if (currentSessionId && processingSessionsRef.current?.has(currentSessionId)) {
+        return;
+      }
+
       resetStreamingState();
-      pendingViewSessionRef.current = null;
-      setClaudeStatus(null);
-      setCanAbortSession(false);
-      setIsLoading(false);
       setCurrentSessionId(null);
-      sessionStorage.removeItem('cursorSessionId');
       messagesOffsetRef.current = 0;
       setHasMoreMessages(false);
       setTotalMessages(0);
@@ -324,20 +495,33 @@ export function useChatSessionState({
       return;
     }
 
-    const provider = (selectedSession.__provider || localStorage.getItem('selected-provider') as Provider) || 'claude';
-    const sessionKey = `${selectedSession.id}:${selectedProject.name}:${provider}`;
+    const selectedSessionId = selectedSession.id;
+    const sessionKey = `${selectedSessionId}:${selectedProject.projectId}`;
+
+    const subscribeToSelectedSession = () => {
+      if (!ws) {
+        return;
+      }
+
+      statusCheckSentAtRef.current.set(selectedSessionId, Date.now());
+      sendMessage({
+        type: 'chat.subscribe',
+        sessions: [{
+          sessionId: selectedSessionId,
+          lastSeq: lastSeqRef.current.get(selectedSessionId) ?? 0,
+        }],
+      });
+    };
 
     // Skip if already loaded and fresh
-    if (lastLoadedSessionKeyRef.current === sessionKey && sessionStore.has(selectedSession.id) && !sessionStore.isStale(selectedSession.id)) {
+    if (lastLoadedSessionKeyRef.current === sessionKey && sessionStore.has(selectedSessionId) && !sessionStore.isStale(selectedSessionId)) {
+      subscribeToSelectedSession();
       return;
     }
 
-    const sessionChanged = currentSessionId !== null && currentSessionId !== selectedSession.id;
+    const sessionChanged = currentSessionId !== null && currentSessionId !== selectedSessionId;
     if (sessionChanged) {
       resetStreamingState();
-      pendingViewSessionRef.current = null;
-      setClaudeStatus(null);
-      setCanAbortSession(false);
     }
 
     // Reset pagination/scroll state
@@ -351,32 +535,28 @@ export function useChatSessionState({
     setLoadAllJustFinished(false);
     setShowLoadAllOverlay(false);
     setViewHiddenCount(0);
+    wasNearTopRef.current = false;
     if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
     if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
 
     if (sessionChanged) {
       setTokenBudget(null);
-      setIsLoading(false);
     }
 
-    setCurrentSessionId(selectedSession.id);
-    if (provider === 'cursor') {
-      sessionStorage.setItem('cursorSessionId', selectedSession.id);
-    }
+    setCurrentSessionId(selectedSessionId);
 
-    // Check session status
-    if (ws) {
-      sendMessage({ type: 'check-session-status', sessionId: selectedSession.id, provider });
-    }
+    // Subscribe to the session's live run (if any): the ack reconciles the
+    // processing indicator, re-attaches a mid-flight stream to this socket,
+    // and replays any live events missed since `lastSeq`. Recording the send
+    // time lets the ack handler discard idle acks that a newer request has
+    // since outdated.
+    subscribeToSelectedSession();
 
     lastLoadedSessionKeyRef.current = sessionKey;
 
     // Fetch from server → store updates → chatMessages re-derives automatically
     setIsLoadingSessionMessages(true);
-    sessionStore.fetchFromServer(selectedSession.id, {
-      provider: (selectedSession.__provider || provider) as SessionProvider,
-      projectName: selectedProject.name,
-      projectPath: selectedProject.fullPath || selectedProject.path || '',
+    sessionStore.fetchFromServer(selectedSessionId, {
       limit: MESSAGES_PER_PAGE,
       offset: 0,
     }).then(slot => {
@@ -390,11 +570,12 @@ export function useChatSessionState({
       setIsLoadingSessionMessages(false);
     });
   }, [
-    pendingViewSessionRef,
     resetStreamingState,
     selectedProject,
     selectedSession?.id,
     sendMessage,
+    statusCheckSentAtRef,
+    lastSeqRef,
     ws,
     sessionStore,
   ]);
@@ -405,17 +586,11 @@ export function useChatSessionState({
 
     const reloadExternalMessages = async () => {
       try {
-        const provider = (localStorage.getItem('selected-provider') as Provider) || 'claude';
-
         // Skip store refresh during active streaming
-        if (!isLoading) {
-          await sessionStore.refreshFromServer(selectedSession.id, {
-            provider: (selectedSession.__provider || provider) as SessionProvider,
-            projectName: selectedProject.name,
-            projectPath: selectedProject.fullPath || selectedProject.path || '',
-          });
+        if (!isProcessing) {
+          await sessionStore.refreshFromServer(selectedSession.id);
 
-          if (Boolean(autoScrollToBottom) && isNearBottom()) {
+          if (isNearBottom()) {
             setTimeout(() => scrollToBottom(), 200);
           }
         }
@@ -426,14 +601,13 @@ export function useChatSessionState({
 
     reloadExternalMessages();
   }, [
-    autoScrollToBottom,
     externalMessageUpdate,
     isNearBottom,
     scrollToBottom,
     selectedProject,
     selectedSession,
     sessionStore,
-    isLoading,
+    isProcessing,
   ]);
 
   // Search navigation target
@@ -450,10 +624,6 @@ export function useChatSessionState({
     }
   }, [selectedSession]);
 
-  useEffect(() => {
-    if (selectedSession?.id) pendingViewSessionRef.current = null;
-  }, [pendingViewSessionRef, selectedSession?.id]);
-
   // Scroll to search target
   useEffect(() => {
     if (!searchTarget || chatMessages.length === 0 || isLoadingSessionMessages) return;
@@ -463,14 +633,9 @@ export function useChatSessionState({
 
     const scrollToTarget = async () => {
       if (!allMessagesLoadedRef.current && selectedSession && selectedProject) {
-        const sessionProvider = selectedSession.__provider || 'claude';
-        if (sessionProvider !== 'cursor') {
           try {
             // Load all messages into the store for search navigation
             const slot = await sessionStore.fetchFromServer(selectedSession.id, {
-              provider: sessionProvider as SessionProvider,
-              projectName: selectedProject.name,
-              projectPath: selectedProject.fullPath || selectedProject.path || '',
               limit: null,
               offset: 0,
             });
@@ -486,7 +651,6 @@ export function useChatSessionState({
           } catch {
             // Fall through and scroll in current messages
           }
-        }
       }
       setVisibleMessageCount(Infinity);
 
@@ -539,18 +703,16 @@ export function useChatSessionState({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages.length, isLoadingSessionMessages, searchTarget]);
 
-  // Token usage fetch for Claude
+  // Initial token usage fetch for providers with file-backed usage data.
   useEffect(() => {
-    if (!selectedProject || !selectedSession?.id || selectedSession.id.startsWith('new-session-')) {
+    if (!selectedProject || !selectedSession?.id) {
       setTokenBudget(null);
       return;
     }
-    const sessionProvider = selectedSession.__provider || 'claude';
-    if (sessionProvider !== 'claude') return;
-
     const fetchInitialTokenUsage = async () => {
       try {
-        const url = `/api/projects/${selectedProject.name}/sessions/${selectedSession.id}/token-usage`;
+        // The backend resolves the provider from the indexed session row.
+        const url = `/api/projects/${selectedProject.projectId}/sessions/${selectedSession.id}/token-usage`;
         const response = await authenticatedFetch(url);
         if (response.ok) {
           setTokenBudget(await response.json());
@@ -562,7 +724,7 @@ export function useChatSessionState({
       }
     };
     fetchInitialTokenUsage();
-  }, [selectedProject, selectedSession?.id, selectedSession?.__provider]);
+  }, [selectedProject, selectedSession?.id]);
 
   const visibleMessages = useMemo(() => {
     if (chatMessages.length <= visibleMessageCount) return chatMessages;
@@ -570,10 +732,9 @@ export function useChatSessionState({
   }, [chatMessages, visibleMessageCount]);
 
   useEffect(() => {
-    if (!autoScrollToBottom && scrollContainerRef.current) {
-      const container = scrollContainerRef.current;
-      scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
-    }
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
   });
 
   useEffect(() => {
@@ -581,8 +742,8 @@ export function useChatSessionState({
     if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
     if (searchScrollActiveRef.current) return;
 
-    if (autoScrollToBottom) {
-      if (!isUserScrolledUp) setTimeout(() => scrollToBottom(), 50);
+    if (!isUserScrolledUp) {
+      setTimeout(() => scrollToBottom(), 50);
       return;
     }
 
@@ -592,7 +753,7 @@ export function useChatSessionState({
     const newHeight = container.scrollHeight;
     const heightDiff = newHeight - prevHeight;
     if (heightDiff > 0 && prevTop > 0) container.scrollTop = prevTop + heightDiff;
-  }, [autoScrollToBottom, chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
+  }, [chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -601,53 +762,21 @@ export function useChatSessionState({
     return () => container.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
-  useEffect(() => {
-    const activeViewSessionId = selectedSession?.id || currentSessionId;
-    if (!activeViewSessionId || !processingSessions) return;
-    const shouldBeProcessing = processingSessions.has(activeViewSessionId);
-    if (shouldBeProcessing && !isLoading) {
-      setIsLoading(true);
-      setCanAbortSession(true);
-    }
-  }, [currentSessionId, isLoading, processingSessions, selectedSession?.id]);
-
-  // "Load all" overlay
-  const prevLoadingRef = useRef(false);
-  useEffect(() => {
-    const wasLoading = prevLoadingRef.current;
-    prevLoadingRef.current = isLoadingMoreMessages;
-
-    if (wasLoading && !isLoadingMoreMessages && hasMoreMessages) {
-      if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
-      setShowLoadAllOverlay(true);
-      loadAllOverlayTimerRef.current = setTimeout(() => setShowLoadAllOverlay(false), 2000);
-    }
-    if (!hasMoreMessages && !isLoadingMoreMessages) {
-      if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
-      setShowLoadAllOverlay(false);
-    }
-    return () => { if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current); };
-  }, [isLoadingMoreMessages, hasMoreMessages]);
+  // "Load all" overlay visibility is driven by scroll-to-top in handleScroll;
+  // timers are cleared on session change via the reset effect above.
 
   const loadAllMessages = useCallback(async () => {
     if (!selectedSession || !selectedProject) return;
     if (isLoadingAllMessages) return;
-    const sessionProvider = selectedSession.__provider || 'claude';
-    if (sessionProvider === 'cursor') {
-      setVisibleMessageCount(Infinity);
-      setAllMessagesLoaded(true);
-      allMessagesLoadedRef.current = true;
-      setLoadAllJustFinished(true);
-      if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
-      loadAllFinishedTimerRef.current = setTimeout(() => { setLoadAllJustFinished(false); setShowLoadAllOverlay(false); }, 1000);
-      return;
-    }
-
     const requestSessionId = selectedSession.id;
     allMessagesLoadedRef.current = true;
     isLoadingMoreRef.current = true;
     setIsLoadingAllMessages(true);
     setShowLoadAllOverlay(true);
+    if (loadAllOverlayTimerRef.current) {
+      clearTimeout(loadAllOverlayTimerRef.current);
+      loadAllOverlayTimerRef.current = null;
+    }
 
     const container = scrollContainerRef.current;
     const previousScrollHeight = container ? container.scrollHeight : 0;
@@ -655,9 +784,6 @@ export function useChatSessionState({
 
     try {
       const slot = await sessionStore.fetchFromServer(requestSessionId, {
-        provider: sessionProvider as SessionProvider,
-        projectName: selectedProject.name,
-        projectPath: selectedProject.fullPath || selectedProject.path || '',
         limit: null,
         offset: 0,
       });
@@ -677,7 +803,11 @@ export function useChatSessionState({
 
         setLoadAllJustFinished(true);
         if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
-        loadAllFinishedTimerRef.current = setTimeout(() => { setLoadAllJustFinished(false); setShowLoadAllOverlay(false); }, 1000);
+        loadAllFinishedTimerRef.current = setTimeout(() => {
+          setLoadAllJustFinished(false);
+          setShowLoadAllOverlay(false);
+          loadAllFinishedTimerRef.current = null;
+        }, 2500);
       } else {
         allMessagesLoadedRef.current = false;
         setShowLoadAllOverlay(false);
@@ -701,16 +831,15 @@ export function useChatSessionState({
     addMessage,
     clearMessages,
     rewindMessages,
-    isLoading,
-    setIsLoading,
+    sessionActivity,
+    isProcessing,
+    canAbortSession,
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,
-    canAbortSession,
-    setCanAbortSession,
     isUserScrolledUp,
     setIsUserScrolledUp,
     tokenBudget,
@@ -723,8 +852,6 @@ export function useChatSessionState({
     isLoadingAllMessages,
     loadAllJustFinished,
     showLoadAllOverlay,
-    claudeStatus,
-    setClaudeStatus,
     createDiff,
     scrollContainerRef,
     scrollToBottom,

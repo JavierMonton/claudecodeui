@@ -5,10 +5,7 @@ import type {
   ClaudePermissionsState,
   CursorPermissionsState,
   CodexPermissionMode,
-  GeminiPermissionMode,
-  McpServer,
-  McpToolsResult,
-  McpTestResult,
+  SettingsProject,
 } from '../../../types/types';
 
 export type AgentContext = {
@@ -17,45 +14,29 @@ export type AgentContext = {
 };
 
 export type AgentContextByProvider = Record<AgentProvider, AgentContext>;
+export type ProviderAuthStatusByProvider = Record<AgentProvider, AuthStatus>;
 
 export type AgentsSettingsTabProps = {
-  claudeAuthStatus: AuthStatus;
-  cursorAuthStatus: AuthStatus;
-  codexAuthStatus: AuthStatus;
-  geminiAuthStatus: AuthStatus;
-  onClaudeLogin: () => void;
-  onCursorLogin: () => void;
-  onCodexLogin: () => void;
-  onGeminiLogin: () => void;
+  providerAuthStatus: ProviderAuthStatusByProvider;
+  onProviderLogin: (provider: AgentProvider) => void;
   claudePermissions: ClaudePermissionsState;
   onClaudePermissionsChange: (value: ClaudePermissionsState) => void;
   cursorPermissions: CursorPermissionsState;
   onCursorPermissionsChange: (value: CursorPermissionsState) => void;
   codexPermissionMode: CodexPermissionMode;
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
-  geminiPermissionMode: GeminiPermissionMode;
-  onGeminiPermissionModeChange: (value: GeminiPermissionMode) => void;
-  mcpServers: McpServer[];
-  cursorMcpServers: McpServer[];
-  codexMcpServers: McpServer[];
-  mcpTestResults: Record<string, McpTestResult>;
-  mcpServerTools: Record<string, McpToolsResult>;
-  mcpToolsLoading: Record<string, boolean>;
-  deleteError: string | null;
-  onOpenMcpForm: (server?: McpServer) => void;
-  onDeleteMcpServer: (serverId: string, scope?: string) => void;
-  onTestMcpServer: (serverId: string, scope?: string) => void;
-  onDiscoverMcpTools: (serverId: string, scope?: string) => void;
-  onOpenCodexMcpForm: (server?: McpServer) => void;
-  onDeleteCodexMcpServer: (serverId: string) => void;
+  projects: SettingsProject[];
 };
 
 export type AgentCategoryTabsSectionProps = {
+  categories: AgentCategory[];
+  selectedAgent: AgentProvider;
   selectedCategory: AgentCategory;
   onSelectCategory: (category: AgentCategory) => void;
 };
 
 export type AgentSelectorSectionProps = {
+  agents: AgentProvider[];
   selectedAgent: AgentProvider;
   onSelectAgent: (agent: AgentProvider) => void;
   agentContextById: AgentContextByProvider;
@@ -71,19 +52,5 @@ export type AgentCategoryContentSectionProps = {
   onCursorPermissionsChange: (value: CursorPermissionsState) => void;
   codexPermissionMode: CodexPermissionMode;
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
-  geminiPermissionMode: GeminiPermissionMode;
-  onGeminiPermissionModeChange: (value: GeminiPermissionMode) => void;
-  mcpServers: McpServer[];
-  cursorMcpServers: McpServer[];
-  codexMcpServers: McpServer[];
-  mcpTestResults: Record<string, McpTestResult>;
-  mcpServerTools: Record<string, McpToolsResult>;
-  mcpToolsLoading: Record<string, boolean>;
-  deleteError: string | null;
-  onOpenMcpForm: (server?: McpServer) => void;
-  onDeleteMcpServer: (serverId: string, scope?: string) => void;
-  onTestMcpServer: (serverId: string, scope?: string) => void;
-  onDiscoverMcpTools: (serverId: string, scope?: string) => void;
-  onOpenCodexMcpForm: (server?: McpServer) => void;
-  onDeleteCodexMcpServer: (serverId: string) => void;
+  projects: SettingsProject[];
 };

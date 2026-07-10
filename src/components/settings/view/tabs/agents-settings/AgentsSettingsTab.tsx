@@ -1,82 +1,79 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+
 import type { AgentCategory, AgentProvider } from '../../../types/types';
+
+import type { AgentContext, AgentsSettingsTabProps } from './types';
 import AgentCategoryContentSection from './sections/AgentCategoryContentSection';
 import AgentCategoryTabsSection from './sections/AgentCategoryTabsSection';
 import AgentSelectorSection from './sections/AgentSelectorSection';
-import type { AgentContext, AgentsSettingsTabProps } from './types';
 
 export default function AgentsSettingsTab({
-  claudeAuthStatus,
-  cursorAuthStatus,
-  codexAuthStatus,
-  geminiAuthStatus,
-  onClaudeLogin,
-  onCursorLogin,
-  onCodexLogin,
-  onGeminiLogin,
+  providerAuthStatus,
+  onProviderLogin,
   claudePermissions,
   onClaudePermissionsChange,
   cursorPermissions,
   onCursorPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
-  geminiPermissionMode,
-  onGeminiPermissionModeChange,
-  mcpServers,
-  cursorMcpServers,
-  codexMcpServers,
-  mcpTestResults,
-  mcpServerTools,
-  mcpToolsLoading,
-  deleteError,
-  onOpenMcpForm,
-  onDeleteMcpServer,
-  onTestMcpServer,
-  onDiscoverMcpTools,
-  onOpenCodexMcpForm,
-  onDeleteCodexMcpServer,
+  projects,
 }: AgentsSettingsTabProps) {
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
+  const visibleCategories = useMemo<AgentCategory[]>(() => (
+    selectedAgent === 'opencode'
+      ? ['account', 'permissions', 'mcp']
+      : ['account', 'permissions', 'mcp', 'skills']
+  ), [selectedAgent]);
+
+  const visibleAgents = useMemo<AgentProvider[]>(() => {
+    return ['claude', 'cursor', 'codex', 'opencode'];
+  }, []);
 
   const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => ({
     claude: {
-      authStatus: claudeAuthStatus,
-      onLogin: onClaudeLogin,
+      authStatus: providerAuthStatus.claude,
+      onLogin: () => onProviderLogin('claude'),
     },
     cursor: {
-      authStatus: cursorAuthStatus,
-      onLogin: onCursorLogin,
+      authStatus: providerAuthStatus.cursor,
+      onLogin: () => onProviderLogin('cursor'),
     },
     codex: {
-      authStatus: codexAuthStatus,
-      onLogin: onCodexLogin,
+      authStatus: providerAuthStatus.codex,
+      onLogin: () => onProviderLogin('codex'),
     },
-    gemini: {
-      authStatus: geminiAuthStatus,
-      onLogin: onGeminiLogin,
+    opencode: {
+      authStatus: providerAuthStatus.opencode,
+      onLogin: () => onProviderLogin('opencode'),
     },
   }), [
-    claudeAuthStatus,
-    codexAuthStatus,
-    cursorAuthStatus,
-    geminiAuthStatus,
-    onClaudeLogin,
-    onCodexLogin,
-    onCursorLogin,
-    onGeminiLogin,
+    onProviderLogin,
+    providerAuthStatus.claude,
+    providerAuthStatus.codex,
+    providerAuthStatus.cursor,
+    providerAuthStatus.opencode,
   ]);
 
+  useEffect(() => {
+    if (!visibleCategories.includes(selectedCategory)) {
+      setSelectedCategory(visibleCategories[0] ?? 'account');
+    }
+  }, [selectedCategory, visibleCategories]);
+
   return (
-    <div className="-mx-4 -mb-4 -mt-2 flex min-h-[300px] flex-col overflow-hidden md:-mx-6 md:-mb-6 md:-mt-2 md:min-h-[500px]">
+    <div className="-mx-4 -mb-4 -mt-2 flex min-h-[300px] min-w-0 flex-col overflow-hidden md:-mx-6 md:-mb-6 md:-mt-2 md:min-h-[500px]">
       <AgentSelectorSection
+        agents={visibleAgents}
         selectedAgent={selectedAgent}
         onSelectAgent={setSelectedAgent}
         agentContextById={agentContextById}
       />
 
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <AgentCategoryTabsSection
+          categories={visibleCategories}
+          selectedAgent={selectedAgent}
           selectedCategory={selectedCategory}
           onSelectCategory={setSelectedCategory}
         />
@@ -91,21 +88,7 @@ export default function AgentsSettingsTab({
           onCursorPermissionsChange={onCursorPermissionsChange}
           codexPermissionMode={codexPermissionMode}
           onCodexPermissionModeChange={onCodexPermissionModeChange}
-          geminiPermissionMode={geminiPermissionMode}
-          onGeminiPermissionModeChange={onGeminiPermissionModeChange}
-          mcpServers={mcpServers}
-          cursorMcpServers={cursorMcpServers}
-          codexMcpServers={codexMcpServers}
-          mcpTestResults={mcpTestResults}
-          mcpServerTools={mcpServerTools}
-          mcpToolsLoading={mcpToolsLoading}
-          deleteError={deleteError}
-          onOpenMcpForm={onOpenMcpForm}
-          onDeleteMcpServer={onDeleteMcpServer}
-          onTestMcpServer={onTestMcpServer}
-          onDiscoverMcpTools={onDiscoverMcpTools}
-          onOpenCodexMcpForm={onOpenCodexMcpForm}
-          onDeleteCodexMcpServer={onDeleteCodexMcpServer}
+          projects={projects}
         />
       </div>
     </div>
