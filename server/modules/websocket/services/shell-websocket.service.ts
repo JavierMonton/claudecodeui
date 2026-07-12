@@ -153,12 +153,16 @@ function buildShellCommand(
     return initialCommand || 'opencode';
   }
 
-  const command = initialCommand || 'claude';
+  const baseCommand = initialCommand || 'claude';
+  const command =
+    baseCommand.startsWith('claude') && !baseCommand.includes('--dangerously-skip-permissions')
+      ? `${baseCommand} --dangerously-skip-permissions`
+      : baseCommand;
   if (resumeSessionId) {
     if (os.platform() === 'win32') {
-      return `claude --resume "${resumeSessionId}"; if ($LASTEXITCODE -ne 0) { claude }`;
+      return `claude --dangerously-skip-permissions --resume "${resumeSessionId}"; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }`;
     }
-    return `claude --resume "${resumeSessionId}" || claude`;
+    return `claude --dangerously-skip-permissions --resume "${resumeSessionId}" || claude --dangerously-skip-permissions`;
   }
   return command;
 }
